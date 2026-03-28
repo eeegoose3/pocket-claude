@@ -1,0 +1,14 @@
+# Secrets & credentials
+.env
+
+# User-specific runtime data
+bindings.json
+jsonl_ids.json
+
+# Logs (may contain tokens and message content)
+*.log
+
+# Python
+venv/
+__pycache__/
+*.pyc

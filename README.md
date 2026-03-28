@@ -1,24 +1,37 @@
-# tmux-bridge
+# pocket-claude
 
-Control Claude Code remotely from your phone via Feishu (Lark).
+Control all your Claude Code sessions from your phone — through any IM app you already use.
 
 ## Why
 
-I often start a Claude Code session on my Mac, then need to step away — grab coffee, commute, or just move to the couch. But the conversation is stuck in the terminal. I wanted a way to keep talking to Claude Code from my phone without interrupting what's already running.
+I often start multiple Claude Code sessions on my Mac, then need to step away. But the conversations are stuck in the terminal. Claude Code's official [Remote Control](https://code.claude.com/docs/en/remote-control) lets you continue from the Claude app, and [Channels](https://code.claude.com/docs/en/channels) adds Telegram/Discord/iMessage — but neither solves multi-session management well:
 
-So I built this bridge: it sits between Feishu (the IM app I use daily) and tmux, forwarding messages both ways. No need to start a new session — you pick up exactly where you left off.
+- **Remote Control**: works great for one session, but managing 5+ sessions means switching between them in the Claude app with no IM-style notification flow
+- **Channels**: each Claude Code process binds to one bot — there's no routing layer to map different chats to different sessions
+
+pocket-claude takes a different approach: **one bridge process manages all your sessions**, with each IM chat mapped to a specific Claude Code instance. Send a message in chat A, it goes to session A. Chat B goes to session B. No ambiguity, no manual switching.
 
 ```
-Phone (Feishu) ←→ WebSocket ←→ bridge.py ←→ tmux send-keys ←→ Claude Code
+Phone (IM app) ←→ WebSocket ←→ bridge.py ←→ tmux send-keys ←→ Claude Code ×N
                                     ↑
                               JSONL monitor
                         (reads Claude's conversation logs)
 ```
 
+## How it compares
+
+|  | pocket-claude | Remote Control | Channels |
+|---|---|---|---|
+| Multi-session routing | One chat per session, automatic | Switch manually in Claude app | One bot per session, no routing |
+| Zero config on Claude side | Works with any running session | Need `/remote-control` per session | Need `--channels` flag at startup |
+| IM platform | Feishu (more coming) | Claude app only | Telegram, Discord, iMessage |
+| Interactive UI forwarding | Selection menus, plan approvals, permission prompts | Full native UI | Text only |
+| Works offline → reconnect | Auto message recovery | Session times out after ~10 min | No recovery |
+
 ## What it does
 
+- **Multi-session hub**: one bridge manages all Claude Code instances, each mapped to its own IM chat
 - Send messages to Claude Code from your phone, get replies pushed back in real-time
-- Each tmux session gets its own Feishu group chat — manage multiple Claude instances independently
 - Detect and forward interactive UIs: selection menus, plan approvals, permission confirmations
 - Auto-push images that Claude generates (Write tool + Playwright screenshots)
 - Seamlessly switch between phone and computer — local keyboard input auto-deactivates remote mode
@@ -53,8 +66,8 @@ Phone (Feishu) ←→ WebSocket ←→ bridge.py ←→ tmux send-keys ←→ Cl
 ### Install
 
 ```bash
-git clone https://github.com/eeegoose3/tmux-bridge.git
-cd tmux-bridge
+git clone https://github.com/eeegoose3/pocket-claude.git
+cd pocket-claude
 python3 -m venv venv
 venv/bin/pip install -r requirements.txt
 ```

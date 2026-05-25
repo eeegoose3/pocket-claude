@@ -168,6 +168,7 @@ When Claude Code or Codex needs permission to run a command or edit a file, you'
 |------|-------------|
 | `bridge.py` | Runtime bridge: Feishu wiring, lifecycle, monitors |
 | `commands.py` | Command routing for `/start`, `/resume`, `/screen`, approvals, and text forwarding |
+| `monitor.py` | Background JSONL/screen monitor, permission/image/menu detection |
 | `backends.py` | Claude/Codex/generic backend helpers: commands, log discovery, cwd lookup |
 | `security.py` | Security configuration and validation helpers |
 | `tmux.py` | tmux command helpers |
@@ -178,6 +179,7 @@ When Claude Code or Codex needs permission to run a command or edit a file, you'
 | `tests/test_backends.py` | Minimal backend helper tests |
 | `tests/test_commands.py` | Minimal command routing tests |
 | `tests/test_formatting.py` | Minimal output formatting tests |
+| `tests/test_monitor.py` | Minimal monitor helper tests |
 | `tests/test_security.py` | Minimal security helper tests |
 | `tests/test_tmux.py` | Minimal tmux helper tests |
 | `tests/test_state.py` | Minimal state persistence tests |
@@ -215,7 +217,7 @@ See `TESTING.md` for automated checks and manual smoke-test notes.
 
 
 ```bash
-python3 -m py_compile bridge.py backends.py parsers.py security.py tmux.py state.py formatting.py commands.py
+python3 -m py_compile bridge.py backends.py parsers.py security.py tmux.py state.py formatting.py commands.py monitor.py
 python3 -m unittest discover -v
 ```
 

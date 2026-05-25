@@ -39,8 +39,6 @@ from __future__ import annotations
 import atexit
 import logging
 import os
-import re
-import signal
 import ssl
 import threading
 import time

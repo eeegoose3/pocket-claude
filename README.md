@@ -172,6 +172,7 @@ When Claude Code or Codex needs permission to run a command or edit a file, you'
 | `monitor.py` | Background JSONL/screen monitor, permission/image/menu detection |
 | `remote_mode.py` | Remote/local mode state and history-context notifications |
 | `history.py` | Recent conversation history loader from agent JSONL logs |
+| `session_runtime.py` | tmux session runtime helpers, backend inference, and caffeinate |
 | `backends.py` | Claude/Codex/generic backend helpers: commands, log discovery, cwd lookup |
 | `security.py` | Security configuration and validation helpers |
 | `tmux.py` | tmux command helpers |
@@ -187,6 +188,7 @@ When Claude Code or Codex needs permission to run a command or edit a file, you'
 | `tests/test_monitor.py` | Minimal monitor helper tests |
 | `tests/test_remote_mode.py` | Minimal remote-mode tests |
 | `tests/test_security.py` | Minimal security helper tests |
+| `tests/test_session_runtime.py` | Minimal session runtime tests |
 | `tests/test_tmux.py` | Minimal tmux helper tests |
 | `tests/test_state.py` | Minimal state persistence tests |
 | `TESTING.md` | Automated and manual smoke-test notes |
@@ -223,7 +225,7 @@ See `TESTING.md` for automated checks and manual smoke-test notes.
 
 
 ```bash
-python3 -m py_compile bridge.py backends.py parsers.py security.py tmux.py state.py formatting.py commands.py monitor.py feishu_adapter.py remote_mode.py history.py
+python3 -m py_compile bridge.py backends.py parsers.py security.py tmux.py state.py formatting.py commands.py monitor.py feishu_adapter.py remote_mode.py history.py session_runtime.py
 python3 -m unittest discover -v
 ```
 

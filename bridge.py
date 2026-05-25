@@ -42,7 +42,6 @@ import os
 import re
 import signal
 import ssl
-import subprocess
 import threading
 import time
 
@@ -53,9 +52,6 @@ load_dotenv()
 from backends import (
     CLAUDE_PROJECTS_DIR,
     CODEX_SESSIONS_DIR,
-    backend_display as backend_display_for_agent,
-    infer_backend_from_command,
-    normalize_agent as normalize_agent_value,
 )
 from commands import CommandContext, handle_command as route_command
 from feishu_adapter import (
@@ -75,16 +71,22 @@ from remote_mode import (
     ensure_remote_mode as remote_ensure_remote_mode,
 )
 from state import BridgeState, load_state, save_state
-from tmux import (
-    capture_pane,
-    send_keys as tmux_send_keys,
-    tmux_run,
-)
 from security import (
     ALLOW_ALL_USERS,
     SKIP_SSL_VERIFY,
 )
 from history import load_recent_history
+from session_runtime import (
+    SessionRuntimeContext,
+    backend_display as runtime_backend_display,
+    create_tmux_and_run as runtime_create_tmux_and_run,
+    get_backend as runtime_get_backend,
+    is_caffeinate_running,
+    normalize_agent as runtime_normalize_agent,
+    send_keys as runtime_send_keys,
+    start_caffeinate,
+    stop_caffeinate,
+)
 
 # SSL 校验默认开启。只有在用户明确配置 SKIP_SSL_VERIFY=true 时，才为代理 MITM 场景跳过校验。
 if SKIP_SSL_VERIFY:
@@ -147,91 +149,40 @@ session_start_time = {}     # {session_name: timestamp} /start 启动时间，�
 lark_client = None          # 飞书 API 客户端
 _reply_chat_id = None       # 当前命令的回复目标 chat_id（临时）
 seen_message_ids = set()    # 飞书消息去重（防止重复事件）
-caffeinate_proc = None      # caffeinate 子进程，阻止 Mac 睡眠
 last_disconnect_time = 0    # WebSocket 上次断连时间戳
 last_connect_time = 0       # WebSocket 上次连接时间戳
 bridge_sent_time = {}       # {session_name: float} bridge 最近一次向 CLI 发送的时间
 BRIDGE_SENT_WINDOW = 15     # 秒，此窗口内的日志 user 消息视为 bridge 发送
 
 
-# ── CLI backend 抽象 ───────────────────────────────────────────
+# ── session runtime helpers ───────────────────────────────────────────
+
+def build_session_runtime_context() -> SessionRuntimeContext:
+    return SessionRuntimeContext(
+        default_agent=DEFAULT_AGENT,
+        session_backend=session_backend,
+        bridge_sent_time=bridge_sent_time,
+    )
 
 
 def normalize_agent(agent: str | None) -> str:
-    return normalize_agent_value(agent, DEFAULT_AGENT)
+    return runtime_normalize_agent(agent, DEFAULT_AGENT)
 
 
 def get_backend(session_name: str | None) -> str:
-    """Return backend for a tmux session, inferring from the running pane if needed."""
-    if session_name and session_name in session_backend:
-        return normalize_agent(session_backend[session_name])
-
-    inferred = None
-    if session_name:
-        ok, pane_cmd = tmux_run(["display-message", "-t", session_name, "-p", "#{pane_current_command}"])
-        if ok:
-            inferred = infer_backend_from_command(pane_cmd, DEFAULT_AGENT)
-    backend = normalize_agent(inferred or DEFAULT_AGENT)
-    if session_name:
-        session_backend[session_name] = backend
-    return backend
+    return runtime_get_backend(session_name, build_session_runtime_context())
 
 
 def backend_display(session_name: str | None) -> str:
-    return backend_display_for_agent(get_backend(session_name))
+    return runtime_backend_display(session_name, build_session_runtime_context())
 
-
-
-# ── 绑定持久化 ────────────────────────────────────────────
-
-def load_bindings():
-    global chat_session_map, session_jsonl_id, session_backend
-    loaded = load_state()
-    chat_session_map = loaded.chat_session_map
-    session_jsonl_id = loaded.session_jsonl_id
-    session_backend = {k: normalize_agent(v) for k, v in loaded.session_backend.items()}
-    log.info(f"已加载 {len(chat_session_map)} 个绑定")
-    log.info(f"已加载 {len(session_jsonl_id)} 个 agent session ID")
-    log.info(f"已加载 {len(session_backend)} 个 backend 绑定")
-
-
-def save_bindings():
-    save_state(BridgeState(
-        chat_session_map=chat_session_map,
-        session_jsonl_id=session_jsonl_id,
-        session_backend=session_backend,
-    ))
-
-# ── caffeinate 防睡眠 ───────────────────────────────────────
-
-def start_caffeinate():
-    """启动 caffeinate 阻止系统睡眠（允许屏幕关闭）"""
-    global caffeinate_proc
-    try:
-        caffeinate_proc = subprocess.Popen(
-            ["caffeinate", "-s"],  # -s: prevent system sleep on AC power
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        log.info(f"caffeinate 已启动 (PID {caffeinate_proc.pid})，Mac 不会自动睡眠")
-    except Exception as e:
-        log.error(f"caffeinate 启动失败: {e}")
-
-def stop_caffeinate():
-    """停止 caffeinate，恢复正常睡眠"""
-    global caffeinate_proc
-    if caffeinate_proc:
-        caffeinate_proc.terminate()
-        caffeinate_proc.wait()
-        log.info("caffeinate 已停止")
-        caffeinate_proc = None
-
-# ── tmux 操作 ──────────────────────────────────────────
 
 def send_keys(session: str, text: str):
-    """向 tmux session 发送按键并记录 bridge 最近发送时间。"""
-    bridge_sent_time[session] = time.time()
-    tmux_send_keys(session, text)
+    runtime_send_keys(session, text, build_session_runtime_context())
+
+
+def create_tmux_and_run(session_name, command):
+    return runtime_create_tmux_and_run(session_name, command)
 
 
 # ── Feishu IM Adapter wrappers ──────────────────────────────
@@ -266,22 +217,6 @@ def send_feishu_file(file_path, target_chat_id=None):
     feishu_send_file(file_path, build_feishu_context(), target_chat_id=target_chat_id)
 
 
-# ── tmux session 创建 ────────────────────────────────────────
-
-
-
-
-
-def create_tmux_and_run(session_name, command):
-    """创建 tmux session 并在里面执行命令"""
-    ok, _ = tmux_run(["new-session", "-d", "-s", session_name])
-    if not ok:
-        return False, f"创建 tmux session '{session_name}' 失败（可能已存在）"
-    tmux_run(["send-keys", "-t", session_name, "--", command])
-    tmux_run(["send-keys", "-t", session_name, "Enter"])
-    return True, ""
-
-
 # ── Feishu IM Layer: Chat Management ─────────────────────────────
 
 def create_feishu_chat(name):
@@ -314,10 +249,6 @@ def ensure_remote_mode(sname):
 
 
 # ── 命令处理 ──────────────────────────────────────────
-
-def is_caffeinate_running() -> bool:
-    return bool(caffeinate_proc and caffeinate_proc.poll() is None)
-
 
 def build_command_context() -> CommandContext:
     return CommandContext(

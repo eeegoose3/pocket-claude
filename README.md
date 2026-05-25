@@ -12,11 +12,21 @@ I often start multiple CLI agent sessions (Claude Code, Codex, or other terminal
 pocket-claude takes a different approach: **one bridge process manages all your CLI agent sessions**, with each IM chat mapped to a specific tmux session. Send a message in chat A, it goes to session A. Chat B goes to session B. No ambiguity, no manual switching.
 
 ```
-Phone (IM app) ←→ WebSocket ←→ bridge.py ←→ tmux send-keys ←→ CLI agent ×N
-                                    ↑
-                           backend monitor
-              (Claude JSONL / Codex JSONL / screen fallback)
+Phone (Feishu/Lark)
+        │
+        ▼
+feishu_adapter.py  ←→  app.py / BridgeRuntime  ←→  commands.py
+        │                         │                    │
+        │                         ▼                    ▼
+        │                    monitor.py          session_runtime.py
+        │                         │                    │
+        └────────────── notifications/files      tmux.py → CLI agent ×N
+                                  │
+                                  ▼
+                   Claude JSONL / Codex JSONL / screen fallback
 ```
+
+`bridge.py` is intentionally tiny: it only imports `app.main()` and starts the runtime. The long-lived process state lives in `BridgeRuntime`, while command routing, monitoring, Feishu I/O, tmux helpers, backend discovery, state persistence, and formatting are split into focused modules.
 
 ## How it compares
 
@@ -37,6 +47,21 @@ Phone (IM app) ←→ WebSocket ←→ bridge.py ←→ tmux send-keys ←→ CL
 - Seamlessly switch between phone and computer — local keyboard input auto-deactivates remote mode
 
 ## How it works
+
+### Runtime architecture
+
+The bridge is organized around a small runtime object plus focused helper modules:
+
+| Layer | Module | Responsibility |
+|-------|--------|----------------|
+| Entry point | `bridge.py` | Thin executable wrapper |
+| Runtime wiring | `app.py` / `BridgeRuntime` | Owns process state, builds contexts, starts Feishu WebSocket and monitor thread |
+| IM adapter | `feishu_adapter.py` | Feishu/Lark messages, files, chats, inbound events, reconnect catch-up |
+| Command routing | `commands.py` | `/start`, `/resume`, `/screen`, approvals, text forwarding |
+| Monitoring | `monitor.py` | JSONL tailing, screen fallback, permission/image/menu/plan detection |
+| Session runtime | `session_runtime.py`, `tmux.py` | backend inference, tmux creation, send-keys, caffeinate |
+| Backend logic | `backends.py`, `parsers.py`, `history.py` | Claude/Codex log discovery, JSONL parsing, recent history |
+| Safety/state/output | `security.py`, `state.py`, `formatting.py` | security checks, persisted bindings, output cleanup |
 
 **Two-layer detection** for maximum reliability:
 
@@ -201,16 +226,17 @@ When Claude Code or Codex needs permission to run a command or edit a file, you'
 
 ## Adapting to other IM platforms
 
-The codebase separates **IM Layer** (Feishu-specific) from **Core Logic** (platform-agnostic). Functions marked with `[IM-LAYER]` in comments are the ones to replace:
+The Feishu-specific code is concentrated in `feishu_adapter.py` and the startup section of `BridgeRuntime.run()` in `app.py`.
 
-- `send_feishu_msg()` — outbound messaging
-- `send_feishu_file()` — file/image upload
-- `create_feishu_chat()` — chat creation
-- `on_message()` — inbound message handling
-- `catchup_missed_messages()` — reconnect recovery
-- `main()` → client initialization section
+To add another IM platform, keep the core modules unchanged and implement an adapter with equivalent responsibilities:
 
-Core logic (backend log parsing, tmux operations, command routing, remote mode) works with any IM backend.
+- outbound text/card messages
+- file/image upload
+- chat creation or chat binding
+- inbound message parsing and whitelist enforcement
+- reconnect recovery or missed-message catch-up, if the platform supports it
+
+The platform-agnostic core is already separated: command routing (`commands.py`), monitoring (`monitor.py`), tmux/session runtime (`session_runtime.py`, `tmux.py`), backend parsing (`backends.py`, `parsers.py`, `history.py`), security (`security.py`), and persistence (`state.py`).
 
 ## Contributing
 

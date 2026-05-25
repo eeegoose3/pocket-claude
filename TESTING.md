@@ -12,6 +12,8 @@ git diff --check
 
 Date: 2026-05-25
 
+Latest manual smoke test was run after the `BridgeRuntime` refactor on merged `main`.
+
 Environment:
 - macOS
 - Feishu bot via WebSocket
@@ -21,7 +23,7 @@ Environment:
 
 Verified:
 - `/doctor` returns configuration and dependency status
-- `/start codex test /Users/chouduck/funny` creates a tmux session and Feishu chat
+- `/start codex test /Users/chouduck/funny` and `/start codex rt-test /Users/chouduck/funny` create tmux sessions and Feishu chats
 - Sending `你好，回复OK` from Feishu reaches Codex
 - Codex response is pushed back to Feishu
 - Turn-complete notification is pushed back to Feishu

@@ -10,7 +10,7 @@ class CommandTests(unittest.TestCase):
         self.sent_keys = []
         self.remote = []
 
-        def send_feishu_msg(text, target_chat_id=None, use_card=None):
+        def send_im_msg(text, target_chat_id=None, use_card=None):
             self.messages.append({"text": text, "target": target_chat_id, "use_card": use_card})
 
         return CommandContext(
@@ -33,9 +33,9 @@ class CommandTests(unittest.TestCase):
             get_backend=lambda name: "claude",
             backend_display=lambda name: "Claude Code",
             save_bindings=lambda: None,
-            send_feishu_msg=send_feishu_msg,
-            send_feishu_file=lambda *a, **kw: None,
-            create_feishu_chat=lambda name: None,
+            send_im_msg=send_im_msg,
+            send_im_file=lambda *a, **kw: None,
+            create_im_chat=lambda name: None,
             create_tmux_and_run=lambda name, cmd: (True, ""),
             load_recent_history=lambda *a, **kw: [],
             enter_remote_mode=lambda name, chats: self.remote.append(("enter", name, chats)),

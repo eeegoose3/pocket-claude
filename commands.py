@@ -53,9 +53,9 @@ class CommandContext:
     get_backend: Callable[[str | None], str]
     backend_display: Callable[[str | None], str]
     save_bindings: Callable[[], None]
-    send_feishu_msg: Callable[..., None]
-    send_feishu_file: Callable[..., None]
-    create_feishu_chat: Callable[[str], str | None]
+    send_im_msg: Callable[..., None]
+    send_im_file: Callable[..., None]
+    create_im_chat: Callable[[str], str | None]
     create_tmux_and_run: Callable[[str, str], tuple[bool, str]]
     load_recent_history: Callable[..., list[dict[str, str]]]
     enter_remote_mode: Callable[[str, list[str]], None]
@@ -121,9 +121,9 @@ def handle_command(text: str, msg_chat_id: str, ctx: CommandContext) -> None:
     get_backend = ctx.get_backend
     backend_display = ctx.backend_display
     save_bindings = ctx.save_bindings
-    send_feishu_msg = ctx.send_feishu_msg
-    send_feishu_file = ctx.send_feishu_file
-    create_feishu_chat = ctx.create_feishu_chat
+    send_im_msg = ctx.send_im_msg
+    send_im_file = ctx.send_im_file
+    create_im_chat = ctx.create_im_chat
     create_tmux_and_run = ctx.create_tmux_and_run
     load_recent_history = ctx.load_recent_history
     enter_remote_mode = ctx.enter_remote_mode
@@ -156,7 +156,7 @@ def handle_command(text: str, msg_chat_id: str, ctx: CommandContext) -> None:
 
     # /help
     if text == "/help":
-        send_feishu_msg(
+        send_im_msg(
             "tmux-bridge 命令：\n\n"
             "【主窗口命令】\n"
             "/doctor — 检查配置、安全默认值和本机 CLI 依赖\n"
@@ -184,24 +184,24 @@ def handle_command(text: str, msg_chat_id: str, ctx: CommandContext) -> None:
 
     # /doctor
     if text == "/doctor":
-        send_feishu_msg(doctor_report(APP_ID, APP_SECRET, ALLOWED_USER_ID, CLAUDE_PROJECTS_DIR, CODEX_SESSIONS_DIR), use_card=False)
+        send_im_msg(doctor_report(APP_ID, APP_SECRET, ALLOWED_USER_ID, CLAUDE_PROJECTS_DIR, CODEX_SESSIONS_DIR), use_card=False)
         return
 
     # /caffeinate — 切换 Mac 防睡眠
     if text == "/caffeinate":
         if is_caffeinate_running():
             stop_caffeinate()
-            send_feishu_msg("☕ 防睡眠已关闭，Mac 会正常休眠")
+            send_im_msg("☕ 防睡眠已关闭，Mac 会正常休眠")
         else:
             start_caffeinate()
-            send_feishu_msg("☕ 防睡眠已开启，Mac 不会自动休眠\n（断连期间的消息仍会在重连后自动补拉）")
+            send_im_msg("☕ 防睡眠已开启，Mac 不会自动休眠\n（断连期间的消息仍会在重连后自动补拉）")
         return
 
     # /list
     if text == "/list":
         sessions = list_sessions()
         if not sessions:
-            send_feishu_msg("没有运行中的 tmux session")
+            send_im_msg("没有运行中的 tmux session")
         else:
             bound_sessions = {}
             for cid, sname in chat_session_map.items():
@@ -214,7 +214,7 @@ def handle_command(text: str, msg_chat_id: str, ctx: CommandContext) -> None:
                     lines.append(f"  {s} (已绑定)")
                 else:
                     lines.append(f"  {s}")
-            send_feishu_msg("tmux sessions:\n" + "\n".join(lines))
+            send_im_msg("tmux sessions:\n" + "\n".join(lines))
         return
 
     # /status — 全局状态总览
@@ -250,14 +250,14 @@ def handle_command(text: str, msg_chat_id: str, ctx: CommandContext) -> None:
         # caffeinate 状态
         caf = "开启" if is_caffeinate_running() else "关闭"
         lines.append(f"caffeinate: {caf}")
-        send_feishu_msg("\n".join(lines))
+        send_im_msg("\n".join(lines))
         return
 
     # /start [agent] <name> <目录> — 新建 Claude Code / Codex / generic CLI
     if text.startswith("/start"):
         parts = text.split(maxsplit=2)
         if len(parts) < 3:
-            send_feishu_msg(
+            send_im_msg(
                 "用法: /start [claude|codex] <session名> <项目目录>\n"
                 "例: /start codex marketing ~/Claude_code/marketing\n"
                 "兼容旧用法: /start marketing ~/Claude_code/marketing（使用 DEFAULT_AGENT）"
@@ -268,7 +268,7 @@ def handle_command(text: str, msg_chat_id: str, ctx: CommandContext) -> None:
             agent = maybe_agent
             rest = parts[2].split(maxsplit=1)
             if len(rest) < 2:
-                send_feishu_msg("用法: /start <agent> <session名> <项目目录>")
+                send_im_msg("用法: /start <agent> <session名> <项目目录>")
                 return
             name, directory = rest[0].strip(), rest[1].strip()
         else:
@@ -276,11 +276,11 @@ def handle_command(text: str, msg_chat_id: str, ctx: CommandContext) -> None:
             name, directory = parts[1].strip(), parts[2].strip()
         err = validate_session_name(name)
         if err:
-            send_feishu_msg(err)
+            send_im_msg(err)
             return
         directory = directory.replace("~", os.path.expanduser("~"))
         if not os.path.isdir(directory):
-            send_feishu_msg(f"项目目录不存在: {directory}")
+            send_im_msg(f"项目目录不存在: {directory}")
             return
         session_backend[name] = agent
         save_bindings()
@@ -295,36 +295,36 @@ def handle_command(text: str, msg_chat_id: str, ctx: CommandContext) -> None:
             binary = BACKENDS[agent]["binary"]
             if ok and (not binary or binary not in pane_cmd.lower()):
                 send_keys(name, cmd)
-                send_feishu_msg(f"tmux session '{name}' 已存在，正在启动 {display}...")
+                send_im_msg(f"tmux session '{name}' 已存在，正在启动 {display}...")
                 time.sleep(3)
             else:
-                send_feishu_msg(f"tmux session '{name}' 已存在且 {display} 在运行")
+                send_im_msg(f"tmux session '{name}' 已存在且 {display} 在运行")
         else:
             ok, err = create_tmux_and_run(name, cmd)
             if not ok:
-                send_feishu_msg(err)
+                send_im_msg(err)
                 return
-            send_feishu_msg(f"已创建 tmux session '{name}'，{display} 启动中...")
+            send_im_msg(f"已创建 tmux session '{name}'，{display} 启动中...")
             time.sleep(3)
         # 创建飞书会话
         existing = [cid for cid, sname in chat_session_map.items() if sname == name]
         if existing:
-            send_feishu_msg(f"'{name}' 已有飞书窗口，无需重复创建")
+            send_im_msg(f"'{name}' 已有飞书窗口，无需重复创建")
             return
-        new_chat_id = create_feishu_chat(name)
+        new_chat_id = create_im_chat(name)
         if new_chat_id:
             chat_session_map[new_chat_id] = name
             save_bindings()
-            send_feishu_msg(f"已绑定到 {display}，去聊天列表找 '{name}'", target_chat_id=new_chat_id)
+            send_im_msg(f"已绑定到 {display}，去聊天列表找 '{name}'", target_chat_id=new_chat_id)
         else:
-            send_feishu_msg(f"飞书会话创建失败，可手动发 /new {name}")
+            send_im_msg(f"飞书会话创建失败，可手动发 /new {name}")
         return
 
     # /resume [agent] <name> <session-id> — 恢复历史对话
     if text.startswith("/resume"):
         parts = text.split(maxsplit=2)
         if len(parts) < 3:
-            send_feishu_msg(
+            send_im_msg(
                 "用法: /resume [claude|codex] <session名> <session-id>\n"
                 "例: /resume codex ease-video 019e5e21-b1a3-75c2-8521-5391b4ff644b"
             )
@@ -334,7 +334,7 @@ def handle_command(text: str, msg_chat_id: str, ctx: CommandContext) -> None:
             agent = maybe_agent
             rest = parts[2].split(maxsplit=1)
             if len(rest) < 2:
-                send_feishu_msg("用法: /resume <agent> <session名> <session-id>")
+                send_im_msg("用法: /resume <agent> <session名> <session-id>")
                 return
             name = rest[0].strip()
             raw_session_id = rest[1]
@@ -344,7 +344,7 @@ def handle_command(text: str, msg_chat_id: str, ctx: CommandContext) -> None:
             raw_session_id = parts[2]
         err = validate_session_name(name)
         if err:
-            send_feishu_msg(err)
+            send_im_msg(err)
             return
         # 飞书可能在长 ID 中插入换行，清理掉所有空白字符
         session_id = re.sub(r"\s+", "", raw_session_id)
@@ -355,7 +355,7 @@ def handle_command(text: str, msg_chat_id: str, ctx: CommandContext) -> None:
         # 从日志查找项目目录
         cwd = find_cwd_for_session_id(session_id, agent)
         if not cwd:
-            send_feishu_msg(f"找不到 session-id '{session_id}' 对应的对话记录")
+            send_im_msg(f"找不到 session-id '{session_id}' 对应的对话记录")
             return
         cmd = resume_command(agent, cwd, session_id)
         display = BACKENDS[agent]["display"]
@@ -364,24 +364,24 @@ def handle_command(text: str, msg_chat_id: str, ctx: CommandContext) -> None:
             ok, pane_cmd = tmux_run(["display-message", "-t", name, "-p", "#{pane_current_command}"])
             binary = BACKENDS[agent]["binary"]
             if ok and binary and binary in pane_cmd.lower():
-                send_feishu_msg(f"tmux session '{name}' 里已有 {display} 在运行")
+                send_im_msg(f"tmux session '{name}' 里已有 {display} 在运行")
             else:
                 send_keys(name, cmd)
-                send_feishu_msg(f"在已有 session '{name}' 中恢复对话...")
+                send_im_msg(f"在已有 session '{name}' 中恢复对话...")
         else:
             ok, err = create_tmux_and_run(name, cmd)
             if not ok:
-                send_feishu_msg(err)
+                send_im_msg(err)
                 return
-            send_feishu_msg(f"已创建 tmux session '{name}'，正在恢复对话...")
+            send_im_msg(f"已创建 tmux session '{name}'，正在恢复对话...")
         # 等 CLI 启动
         time.sleep(3)
         # 创建飞书会话（检查是否已有）
         existing = [cid for cid, sname in chat_session_map.items() if sname == name]
         if existing:
-            send_feishu_msg(f"'{name}' 已有飞书窗口，无需重复创建")
+            send_im_msg(f"'{name}' 已有飞书窗口，无需重复创建")
             return
-        new_chat_id = create_feishu_chat(name)
+        new_chat_id = create_im_chat(name)
         if new_chat_id:
             chat_session_map[new_chat_id] = name
             save_bindings()
@@ -390,28 +390,28 @@ def handle_command(text: str, msg_chat_id: str, ctx: CommandContext) -> None:
             if history:
                 for msg in history:
                     if msg["role"] == "user":
-                        send_feishu_msg(f"👤 你：{msg['text']}", target_chat_id=new_chat_id, use_card=False)
+                        send_im_msg(f"👤 你：{msg['text']}", target_chat_id=new_chat_id, use_card=False)
                     else:
                         text = msg["text"]
                         if len(text) > 500:
                             text = text[:500] + "...（已截断）"
-                        send_feishu_msg(f"🤖 {display}：{text}", target_chat_id=new_chat_id, use_card=True)
-                send_feishu_msg("── 以上是历史记录 ──", target_chat_id=new_chat_id, use_card=False)
-            send_feishu_msg(f"已绑定，去聊天列表找 '{name}'", target_chat_id=new_chat_id)
+                        send_im_msg(f"🤖 {display}：{text}", target_chat_id=new_chat_id, use_card=True)
+                send_im_msg("── 以上是历史记录 ──", target_chat_id=new_chat_id, use_card=False)
+            send_im_msg(f"已绑定，去聊天列表找 '{name}'", target_chat_id=new_chat_id)
         else:
-            send_feishu_msg(f"tmux session 已创建，但飞书会话创建失败。可手动发 /new {name}")
+            send_im_msg(f"tmux session 已创建，但飞书会话创建失败。可手动发 /new {name}")
         return
 
     # /new <session> [agent] — 自动创建飞书会话并绑定
     if text.startswith("/new"):
         parts = text.split()
         if len(parts) < 2:
-            send_feishu_msg("用法: /new <session名> [claude|codex|generic]")
+            send_im_msg("用法: /new <session名> [claude|codex|generic]")
             return
         name = parts[1].strip()
         err = validate_session_name(name)
         if err:
-            send_feishu_msg(err)
+            send_im_msg(err)
             return
         if len(parts) >= 3:
             session_backend[name] = normalize_agent(parts[2])
@@ -419,45 +419,45 @@ def handle_command(text: str, msg_chat_id: str, ctx: CommandContext) -> None:
             get_backend(name)
         if not session_exists(name):
             sessions = list_sessions()
-            send_feishu_msg(f"session '{name}' 不存在\n可用: {', '.join(sessions)}")
+            send_im_msg(f"session '{name}' 不存在\n可用: {', '.join(sessions)}")
             return
         # 检查是否已有会话绑定到这个 session
         existing = [cid for cid, sname in chat_session_map.items() if sname == name]
         if existing:
-            send_feishu_msg(f"session '{name}' 已有绑定的会话，无需重复创建\n如需重建，先在对应会话里发 /unbind")
+            send_im_msg(f"session '{name}' 已有绑定的会话，无需重复创建\n如需重建，先在对应会话里发 /unbind")
             return
-        send_feishu_msg(f"正在创建会话 '{name}'...")
-        new_chat_id = create_feishu_chat(name)
+        send_im_msg(f"正在创建会话 '{name}'...")
+        new_chat_id = create_im_chat(name)
         if not new_chat_id:
-            send_feishu_msg("创建会话失败，请检查 im:chat 权限是否已添加并发版")
+            send_im_msg("创建会话失败，请检查 im:chat 权限是否已添加并发版")
             return
         chat_session_map[new_chat_id] = name
         save_bindings()
         # 在新会话里发欢迎消息 + 截屏
-        send_feishu_msg(
+        send_im_msg(
             f"已绑定到 session: {name} ({backend_display(name)})\n直接在这里发消息即可控制",
             target_chat_id=new_chat_id,
         )
         screen = clean_ansi(capture_pane(name))
         if screen:
-            send_feishu_msg(f"📺 当前屏幕:\n{screen}", target_chat_id=new_chat_id)
-        send_feishu_msg(f"会话 '{name}' 已创建，去聊天列表找到它")
+            send_im_msg(f"📺 当前屏幕:\n{screen}", target_chat_id=new_chat_id)
+        send_im_msg(f"会话 '{name}' 已创建，去聊天列表找到它")
         return
 
     # /bind <name> 或 /switch <name>（兼容旧命令）
     if text.startswith("/bind") or text.startswith("/switch"):
         parts = text.split()
         if len(parts) < 2:
-            send_feishu_msg("用法: /bind <session名> [claude|codex|generic]")
+            send_im_msg("用法: /bind <session名> [claude|codex|generic]")
             return
         name = parts[1].strip()
         err = validate_session_name(name)
         if err:
-            send_feishu_msg(err)
+            send_im_msg(err)
             return
         if not session_exists(name):
             sessions = list_sessions()
-            send_feishu_msg(f"session '{name}' 不存在\n可用: {', '.join(sessions)}")
+            send_im_msg(f"session '{name}' 不存在\n可用: {', '.join(sessions)}")
             return
         if len(parts) >= 3:
             session_backend[name] = normalize_agent(parts[2])
@@ -465,11 +465,11 @@ def handle_command(text: str, msg_chat_id: str, ctx: CommandContext) -> None:
             get_backend(name)
         chat_session_map[msg_chat_id] = name
         save_bindings()
-        send_feishu_msg(f"已绑定到 session: {name} ({backend_display(name)})")
+        send_im_msg(f"已绑定到 session: {name} ({backend_display(name)})")
         # 绑定后立即截屏
         screen = clean_ansi(capture_pane(name))
         if screen:
-            send_feishu_msg(f"📺 {name} 当前屏幕:\n{screen}")
+            send_im_msg(f"📺 {name} 当前屏幕:\n{screen}")
         return
 
     # /unbind
@@ -477,18 +477,18 @@ def handle_command(text: str, msg_chat_id: str, ctx: CommandContext) -> None:
         if msg_chat_id in chat_session_map:
             old = chat_session_map.pop(msg_chat_id)
             save_bindings()
-            send_feishu_msg(f"已解绑 session: {old}")
+            send_im_msg(f"已解绑 session: {old}")
         else:
-            send_feishu_msg("当前对话未绑定任何 session")
+            send_im_msg("当前对话未绑定任何 session")
         return
 
     # ── 以下命令需要已绑定 session ──
 
     if not bound:
-        send_feishu_msg("请先绑定 session\n发 /list 查看可用 session\n发 /bind <name> 绑定")
+        send_im_msg("请先绑定 session\n发 /list 查看可用 session\n发 /bind <name> 绑定")
         return
     if not session_exists(bound):
-        send_feishu_msg(f"session '{bound}' 已不存在，自动解绑")
+        send_im_msg(f"session '{bound}' 已不存在，自动解绑")
         chat_session_map.pop(msg_chat_id, None)
         save_bindings()
         return
@@ -496,26 +496,26 @@ def handle_command(text: str, msg_chat_id: str, ctx: CommandContext) -> None:
     # /screen
     if text == "/screen":
         screen = clean_ansi(capture_pane(bound))
-        send_feishu_msg(f"📺 {bound}:\n{screen}" if screen else "屏幕为空")
+        send_im_msg(f"📺 {bound}:\n{screen}" if screen else "屏幕为空")
         return
 
     # /file <路径> — 发送本地文件到飞书
     if text.startswith("/file"):
         parts = text.split(maxsplit=1)
         if len(parts) < 2:
-            send_feishu_msg("用法: /file <文件路径>\n例: /file ~/Documents/report.pdf")
+            send_im_msg("用法: /file <文件路径>\n例: /file ~/Documents/report.pdf")
             return
         ok, path_or_msg = is_user_file_allowed(parts[1].strip())
         if not ok:
-            send_feishu_msg(f"⚠️ {path_or_msg}")
+            send_im_msg(f"⚠️ {path_or_msg}")
             return
-        send_feishu_file(path_or_msg)
+        send_im_file(path_or_msg)
         return
 
     # /remote — 手动进入远程模式
     if text == "/remote":
         if remote_mode.get(bound, False):
-            send_feishu_msg("📱 已在远程模式中")
+            send_im_msg("📱 已在远程模式中")
         else:
             all_chats = [cid for cid, sn in chat_session_map.items() if sn == bound]
             enter_remote_mode(bound, all_chats)
@@ -524,7 +524,7 @@ def handle_command(text: str, msg_chat_id: str, ctx: CommandContext) -> None:
     # /local — 手动切换到本地模式
     if text == "/local":
         if not remote_mode.get(bound, False):
-            send_feishu_msg("💻 已在本地模式中")
+            send_im_msg("💻 已在本地模式中")
         else:
             all_chats = [cid for cid, sn in chat_session_map.items() if sn == bound]
             exit_remote_mode(bound, all_chats, "手动切换")
@@ -537,20 +537,20 @@ def handle_command(text: str, msg_chat_id: str, ctx: CommandContext) -> None:
             # Avoid treating arbitrary /yes-like text as approval.
             pass
         elif not approval_token_ok(y_parts):
-            send_feishu_msg("🔐 当前已启用 APPROVAL_TOKEN，请使用 `/y <token>` 或 `/n <token>`")
+            send_im_msg("🔐 当前已启用 APPROVAL_TOKEN，请使用 `/y <token>` 或 `/n <token>`")
             return
         elif y_parts[0] in ("/y", "/n"):
             ensure_remote_mode(bound)
             answer = y_parts[0][1]
             send_confirm(bound, answer)
-            send_feishu_msg(f"已发送: {answer}")
+            send_im_msg(f"已发送: {answer}")
             return
 
     # /cancel
     if text == "/cancel":
         ensure_remote_mode(bound)
         send_ctrl_c(bound)
-        send_feishu_msg("已发送 Ctrl+C")
+        send_im_msg("已发送 Ctrl+C")
         return
 
     # 选择菜单模式 — 用方向键导航而非直接输入文本
@@ -570,11 +570,11 @@ def handle_command(text: str, msg_chat_id: str, ctx: CommandContext) -> None:
                 if target in valid_nums:
                     select_menu_option(bound, target)
                     opt_text = next(o["text"] for o in options if o["num"] == target)
-                    send_feishu_msg(f"→ 已选择: {target}. {opt_text}")
+                    send_im_msg(f"→ 已选择: {target}. {opt_text}")
                     menu_notified.discard(bound)
                     menu_state.pop(bound, None)
                 else:
-                    send_feishu_msg(f"⚠️ 有效选项: {', '.join(str(n) for n in valid_nums)}")
+                    send_im_msg(f"⚠️ 有效选项: {', '.join(str(n) for n in valid_nums)}")
                 return
             # 文字回复 — 找 "Type something" 或 "Other" 选项
             type_opt = next(
@@ -587,13 +587,13 @@ def handle_command(text: str, msg_chat_id: str, ctx: CommandContext) -> None:
                 select_menu_option(bound, type_opt["num"])
                 time.sleep(0.5)  # 等 UI 切换到文字输入
                 send_keys(bound, text)
-                send_feishu_msg(f"→ 已输入自定义回复")
+                send_im_msg(f"→ 已输入自定义回复")
             else:
                 # 没有自定义输入选项，按 Esc 退出菜单再发
                 tmux_run(["send-keys", "-t", bound, "Escape"])
                 time.sleep(0.3)
                 send_keys(bound, text)
-                send_feishu_msg(f"→ 已退出菜单并发送")
+                send_im_msg(f"→ 已退出菜单并发送")
             menu_notified.discard(bound)
             menu_state.pop(bound, None)
             return
@@ -601,4 +601,4 @@ def handle_command(text: str, msg_chat_id: str, ctx: CommandContext) -> None:
     # 普通文本 → send-keys（自动进入远程模式）
     ensure_remote_mode(bound)
     send_keys(bound, text)
-    send_feishu_msg(f"→ 已发送到 {bound}")
+    send_im_msg(f"→ 已发送到 {bound}")

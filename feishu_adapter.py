@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass
 import json
 import logging
 import os
 
 from formatting import convert_tables_in_text, has_markdown
+from im_adapter import IMContext
 from security import whitelist_allows_sender
 
 try:
@@ -48,27 +47,14 @@ FILE_TYPE_MAP = {
 }
 
 
-@dataclass
-class FeishuContext:
-    lark_client: object | None
-    default_chat_id: str | None
-    max_msg_len: int
-    allowed_user_id: str | None
-    allow_all_users: bool
-    seen_message_ids: set[str]
-    chat_session_map: dict[str, str]
-    remote_mode: dict[str, bool]
-    last_disconnect_time: float
-    last_connect_time: float
-    handle_command: Callable[[str, str], None]
-    reset_disconnect_time: Callable[[], None]
+FeishuContext = IMContext  # Backward-compatible provider-specific alias.
 
 
 def send_message(text: str, ctx: FeishuContext, target_chat_id: str | None = None, use_card: bool | None = None) -> None:
     """Send a text or card message to Feishu."""
     cid = target_chat_id or ctx.default_chat_id
-    if not cid or not ctx.lark_client:
-        log.warning("chat_id 或 lark_client 未初始化，无法发送消息")
+    if not cid or not ctx.client:
+        log.warning("chat_id 或 IM client 未初始化，无法发送消息")
         return
 
     if use_card is None:
@@ -106,7 +92,7 @@ def send_message(text: str, ctx: FeishuContext, target_chat_id: str | None = Non
             .request_body(body) \
             .build()
         try:
-            resp = ctx.lark_client.im.v1.message.create(req)
+            resp = ctx.client.im.v1.message.create(req)
             if not resp.success():
                 log.error(f"发送消息失败: {resp.code} {resp.msg}")
         except Exception as e:
@@ -116,8 +102,8 @@ def send_message(text: str, ctx: FeishuContext, target_chat_id: str | None = Non
 def send_file(file_path: str, ctx: FeishuContext, target_chat_id: str | None = None) -> None:
     """Upload a local file and send it to Feishu."""
     cid = target_chat_id or ctx.default_chat_id
-    if not cid or not ctx.lark_client:
-        log.warning("chat_id 或 lark_client 未初始化，无法发送文件")
+    if not cid or not ctx.client:
+        log.warning("chat_id 或 IM client 未初始化，无法发送文件")
         return
 
     file_path = os.path.expanduser(file_path)
@@ -138,7 +124,7 @@ def send_file(file_path: str, ctx: FeishuContext, target_chat_id: str | None = N
                 req = CreateImageRequest.builder() \
                     .request_body(body) \
                     .build()
-                resp = ctx.lark_client.im.v1.image.create(req)
+                resp = ctx.client.im.v1.image.create(req)
 
             if not resp.success():
                 send_message(f"图片上传失败: {resp.code} {resp.msg}", ctx, target_chat_id=cid)
@@ -161,7 +147,7 @@ def send_file(file_path: str, ctx: FeishuContext, target_chat_id: str | None = N
                 req = CreateFileRequest.builder() \
                     .request_body(body) \
                     .build()
-                resp = ctx.lark_client.im.v1.file.create(req)
+                resp = ctx.client.im.v1.file.create(req)
 
             if not resp.success():
                 send_message(f"文件上传失败: {resp.code} {resp.msg}", ctx, target_chat_id=cid)
@@ -178,7 +164,7 @@ def send_file(file_path: str, ctx: FeishuContext, target_chat_id: str | None = N
             .receive_id_type("chat_id") \
             .request_body(msg_body) \
             .build()
-        msg_resp = ctx.lark_client.im.v1.message.create(msg_req)
+        msg_resp = ctx.client.im.v1.message.create(msg_req)
         if msg_resp.success():
             send_message(f"✅ {file_name}", ctx, target_chat_id=cid)
         else:
@@ -190,7 +176,7 @@ def send_file(file_path: str, ctx: FeishuContext, target_chat_id: str | None = N
 
 def create_chat(name: str, ctx: FeishuContext) -> str | None:
     """Create a Feishu group chat and add the configured user."""
-    if not ctx.lark_client or not ctx.allowed_user_id:
+    if not ctx.client or not ctx.allowed_user_id:
         return None
     body = CreateChatRequestBody.builder() \
         .name(name) \
@@ -202,7 +188,7 @@ def create_chat(name: str, ctx: FeishuContext) -> str | None:
         .request_body(body) \
         .build()
     try:
-        resp = ctx.lark_client.im.v1.chat.create(req)
+        resp = ctx.client.im.v1.chat.create(req)
         if resp.success():
             log.info(f"创建群聊成功: {name} -> {resp.data.chat_id}")
             return resp.data.chat_id
@@ -255,7 +241,7 @@ def on_message(data, ctx: FeishuContext) -> None:
 
 def catchup_missed_messages(ctx: FeishuContext) -> None:
     """Pull missed messages via Feishu REST API after WebSocket reconnect."""
-    if not ctx.last_disconnect_time or not ctx.lark_client:
+    if not ctx.last_disconnect_time or not ctx.client:
         return
 
     gap_seconds = ctx.last_connect_time - ctx.last_disconnect_time
@@ -276,7 +262,7 @@ def catchup_missed_messages(ctx: FeishuContext) -> None:
                 .page_size(50) \
                 .build()
 
-            response = ctx.lark_client.im.v1.message.list(request)
+            response = ctx.client.im.v1.message.list(request)
             if not response.success():
                 log.warning(f"补拉 {session_name} 消息失败: {response.msg}")
                 continue
@@ -319,3 +305,24 @@ def catchup_missed_messages(ctx: FeishuContext) -> None:
             send_message(msg, ctx, target_chat_id=chat_id)
 
     ctx.reset_disconnect_time()
+
+
+class FeishuAdapter:
+    """Feishu/Lark implementation of the provider-neutral IMAdapter contract."""
+
+    name = "feishu"
+
+    def send_message(self, text: str, ctx: IMContext, target_chat_id: str | None = None, use_card: bool | None = None) -> None:
+        send_message(text, ctx, target_chat_id=target_chat_id, use_card=use_card)
+
+    def send_file(self, file_path: str, ctx: IMContext, target_chat_id: str | None = None) -> None:
+        send_file(file_path, ctx, target_chat_id=target_chat_id)
+
+    def create_chat(self, name: str, ctx: IMContext) -> str | None:
+        return create_chat(name, ctx)
+
+    def on_message(self, data: object, ctx: IMContext) -> None:
+        on_message(data, ctx)
+
+    def catchup_missed_messages(self, ctx: IMContext) -> None:
+        catchup_missed_messages(ctx)

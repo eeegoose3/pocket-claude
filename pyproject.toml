@@ -30,6 +30,7 @@ py-modules = [
     "feishu_adapter",
     "formatting",
     "history",
+    "im_adapter",
     "monitor",
     "parsers",
     "remote_mode",

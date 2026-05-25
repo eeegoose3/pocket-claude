@@ -12,10 +12,10 @@ I often start multiple CLI agent sessions (Claude Code, Codex, or other terminal
 pocket-claude takes a different approach: **one bridge process manages all your CLI agent sessions**, with each IM chat mapped to a specific tmux session. Send a message in chat A, it goes to session A. Chat B goes to session B. No ambiguity, no manual switching.
 
 ```
-Phone (Feishu/Lark)
+Phone (Feishu/Lark today)
         │
         ▼
-feishu_adapter.py  ←→  app.py / BridgeRuntime  ←→  commands.py
+im_adapter.py  ←→  feishu_adapter.py  ←→  app.py / BridgeRuntime  ←→  commands.py
         │                         │                    │
         │                         ▼                    ▼
         │                    monitor.py          session_runtime.py
@@ -26,7 +26,7 @@ feishu_adapter.py  ←→  app.py / BridgeRuntime  ←→  commands.py
                    Claude JSONL / Codex JSONL / screen fallback
 ```
 
-`bridge.py` is intentionally tiny: it only imports `app.main()` and starts the runtime. The long-lived process state lives in `BridgeRuntime`, while command routing, monitoring, Feishu I/O, tmux helpers, backend discovery, state persistence, and formatting are split into focused modules.
+`bridge.py` is intentionally tiny: it only imports `app.main()` and starts the runtime. The long-lived process state lives in `BridgeRuntime`, while command routing, monitoring, IM I/O, tmux helpers, backend discovery, state persistence, and formatting are split into focused modules.
 
 ## How it compares
 
@@ -55,8 +55,9 @@ The bridge is organized around a small runtime object plus focused helper module
 | Layer | Module | Responsibility |
 |-------|--------|----------------|
 | Entry point | `bridge.py` | Thin executable wrapper |
-| Runtime wiring | `app.py` / `BridgeRuntime` | Owns process state, builds contexts, starts Feishu WebSocket and monitor thread |
-| IM adapter | `feishu_adapter.py` | Feishu/Lark messages, files, chats, inbound events, reconnect catch-up |
+| Runtime wiring | `app.py` / `BridgeRuntime` | Owns process state, builds contexts, injects the IM adapter, starts Feishu WebSocket and monitor thread |
+| IM contract | `im_adapter.py` | Provider-neutral `IMAdapter` / `IMContext` interface used by the bridge core |
+| Feishu adapter | `feishu_adapter.py` | Feishu/Lark messages, files, chats, inbound events, reconnect catch-up |
 | Command routing | `commands.py` | `/start`, `/resume`, `/screen`, approvals, text forwarding |
 | Monitoring | `monitor.py` | JSONL tailing, screen fallback, permission/image/menu/plan detection |
 | Session runtime | `session_runtime.py`, `tmux.py` | backend inference, tmux creation, send-keys, caffeinate |
@@ -204,7 +205,8 @@ When Claude Code or Codex needs permission to run a command or edit a file, you'
 | `pyproject.toml` | Editable-install metadata and console script definition |
 | `.env.example` | Starter environment template |
 | `app.py` | BridgeRuntime application state, context wiring, and lifecycle startup |
-| `feishu_adapter.py` | Feishu/Lark message, file, chat, inbound event, and reconnect adapter |
+| `im_adapter.py` | Provider-neutral IM adapter protocol and runtime context |
+| `feishu_adapter.py` | Feishu/Lark implementation of the IM adapter contract |
 | `commands.py` | Command routing for `/start`, `/resume`, `/screen`, approvals, and text forwarding |
 | `monitor.py` | Background JSONL/screen monitor, permission/image/menu detection |
 | `remote_mode.py` | Remote/local mode state and history-context notifications |
@@ -241,7 +243,7 @@ When Claude Code or Codex needs permission to run a command or edit a file, you'
 
 ## Adapting to other IM platforms
 
-The Feishu-specific code is concentrated in `feishu_adapter.py` and the startup section of `BridgeRuntime.run()` in `app.py`.
+The bridge core now talks to a provider-neutral `IMAdapter` interface in `im_adapter.py`. Feishu/Lark is the first concrete implementation in `feishu_adapter.py`; Feishu WebSocket startup still lives in `BridgeRuntime.run()` because it is provider-specific process wiring.
 
 To add another IM platform, keep the core modules unchanged and implement an adapter with equivalent responsibilities:
 
@@ -251,7 +253,7 @@ To add another IM platform, keep the core modules unchanged and implement an ada
 - inbound message parsing and whitelist enforcement
 - reconnect recovery or missed-message catch-up, if the platform supports it
 
-The platform-agnostic core is already separated: command routing (`commands.py`), monitoring (`monitor.py`), tmux/session runtime (`session_runtime.py`, `tmux.py`), backend parsing (`backends.py`, `parsers.py`, `history.py`), security (`security.py`), and persistence (`state.py`).
+The platform-agnostic core is already separated: command routing (`commands.py`), monitoring (`monitor.py`), remote mode (`remote_mode.py`), tmux/session runtime (`session_runtime.py`, `tmux.py`), backend parsing (`backends.py`, `parsers.py`, `history.py`), security (`security.py`), and persistence (`state.py`). `BridgeRuntime` accepts an injected adapter, so adapter behavior can be tested without a live Feishu client.
 
 ## Contributing
 
@@ -259,7 +261,7 @@ This project is built and maintained by one person (with a lot of help from Clau
 
 - **Bug reports** — if something breaks, open an issue with your terminal output and steps to reproduce
 - **Bug fixes** — PRs for fixes are always appreciated, especially edge cases I haven't hit yet
-- **New IM adapters** — want to use this with Telegram, Slack, Discord, or WeChat? The IM layer is separated and marked with `[IM-LAYER]` in the code
+- **New IM adapters** — want to use this with Telegram, Slack, Discord, or WeChat? Implement the `IMAdapter` contract and keep bridge core modules unchanged
 - **Ideas and feedback** — open an issue or start a discussion
 
 ## Development
@@ -268,7 +270,7 @@ See `TESTING.md` for automated checks and manual smoke-test notes.
 
 
 ```bash
-python3 -m py_compile bridge.py app.py cli.py backends.py parsers.py security.py tmux.py state.py formatting.py commands.py monitor.py feishu_adapter.py remote_mode.py history.py session_runtime.py
+python3 -m py_compile bridge.py app.py cli.py backends.py parsers.py security.py tmux.py state.py formatting.py commands.py monitor.py im_adapter.py feishu_adapter.py remote_mode.py history.py session_runtime.py
 python3 -m unittest discover -v
 venv/bin/pocket-claude version
 venv/bin/pocket-claude doctor

@@ -33,6 +33,12 @@ class SecurityTests(unittest.TestCase):
         self.assertFalse(security.whitelist_allows_sender(None, "u2", allow_all=False))
         self.assertTrue(security.whitelist_allows_sender(None, "u2", allow_all=True))
 
+    def test_doctor_reports_parser_compatibility(self):
+        report = security.doctor_report("app", "secret", "user", "/missing/claude", "/missing/codex")
+        self.assertIn("Parser compatibility", report)
+        self.assertIn("claude-code-jsonl-v1", report)
+        self.assertIn("codex-rollout-jsonl-v1", report)
+
 
 if __name__ == "__main__":
     unittest.main()

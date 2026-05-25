@@ -58,6 +58,7 @@ def verify_jsonl_by_screen(session_name, candidate_files, ctx):
         return None
 
     screen_text = screen.strip()
+    agent = ctx.get_backend(session_name)
     matched = []
 
     for fpath in candidate_files:
@@ -70,7 +71,7 @@ def verify_jsonl_by_screen(session_name, candidate_files, ctx):
 
             fingerprints = []
             for line in tail_lines:
-                text = extract_assistant_text(line)
+                text = extract_assistant_text(line, agent)
                 if text:
                     # 取前 80 个字符作为指纹（去掉 markdown 符号和空白）
                     clean = re.sub(r"[#*`_\-|>\s]+", " ", text).strip()
@@ -336,7 +337,7 @@ def jsonl_monitor(ctx):
                             continue
 
                         # ⓪ user 消息检测（远程模式：检测本地键盘输入 → 自动退出）
-                        user_text = extract_user_text(line)
+                        user_text = extract_user_text(line, agent)
                         if user_text and is_remote:
                             if time.time() - ctx.bridge_sent_time.get(sname, 0) > ctx.bridge_sent_window:
                                 # 本地键盘输入 → 推送内容 + 退出远程模式
@@ -346,13 +347,13 @@ def jsonl_monitor(ctx):
                                 is_remote = False
 
                         # ① assistant 文本回复 → 推送到飞书（仅远程模式）
-                        text = extract_assistant_text(line)
+                        text = extract_assistant_text(line, agent)
                         if text and is_remote:
                             for cid in chat_ids:
                                 ctx.send_feishu_msg(text, target_chat_id=cid, use_card=True)
 
                         # ② 交互式 UI 检测（AskUserQuestion / ExitPlanMode / 权限确认）
-                        ui = extract_interactive_ui(line)
+                        ui = extract_interactive_ui(line, agent)
                         if ui:
                             if ui["type"] == "ask" and sname not in menu_notified:
                                 # AskUserQuestion：推送带描述的选项到飞书
@@ -399,7 +400,7 @@ def jsonl_monitor(ctx):
                                 }
 
                         # ②b 图片写入检测 — 记录待确认的图片文件
-                        img = extract_image_write(line)
+                        img = extract_image_write(line, agent)
                         if img:
                             pending_image[sname] = {
                                 "id": img["tool_id"], "path": img["path"], "time": time.time(),
@@ -407,17 +408,17 @@ def jsonl_monitor(ctx):
 
                         # ③ tool_result 到达 → 清除权限等待状态 + 推送图片
                         if sname in pending_permission:
-                            if check_tool_result(line, pending_permission[sname]["id"]):
+                            if check_tool_result(line, pending_permission[sname]["id"], agent):
                                 pending_permission.pop(sname, None)
                         if sname in pending_image:
                             pi = pending_image[sname]
-                            if check_tool_result(line, pi["id"]):
+                            if check_tool_result(line, pi["id"], agent):
                                 # Write 图片工具执行成功，自动推送
                                 if is_remote:
                                     img_path = pi["path"]
                                     if img_path == "__screenshot__":
                                         # Playwright 截图：从 tool_result 中提取路径
-                                        real_path = extract_screenshot_path(line, pi["id"])
+                                        real_path = extract_screenshot_path(line, pi["id"], agent)
                                         if real_path:
                                             img_path = real_path
                                         else:
@@ -429,7 +430,7 @@ def jsonl_monitor(ctx):
                                 pending_image.pop(sname, None)
 
                         # ④ 系统事件（上下文压缩、API 错误）— 仅远程模式推送
-                        evt = extract_system_event(line)
+                        evt = extract_system_event(line, agent)
                         if evt and is_remote:
                             if evt["type"] == "compact":
                                 tokens = evt["pre_tokens"]
@@ -446,7 +447,7 @@ def jsonl_monitor(ctx):
                     # ⑤ 回复完毕通知（仅远程模式）
                     if is_remote:
                         lines = [l for l in new_content.strip().split("\n") if l.strip()]
-                        if lines and is_turn_complete(lines[-1]):
+                        if lines and is_turn_complete(lines[-1], agent):
                             for cid in chat_ids:
                                 ctx.send_feishu_msg("✅ 已回复完毕，等待指令", target_chat_id=cid)
                 else:

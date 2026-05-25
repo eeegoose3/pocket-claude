@@ -5,6 +5,22 @@ import parsers
 
 
 class ParserTests(unittest.TestCase):
+    def test_parser_detection_and_metadata(self):
+        codex = json.dumps({"type": "event_msg", "payload": {"type": "agent_message", "message": "hi"}})
+        claude = json.dumps({
+            "type": "assistant",
+            "message": {"role": "assistant", "content": "hi"},
+        })
+
+        self.assertIsInstance(parsers.detect_parser(codex), parsers.CodexJsonlParser)
+        self.assertIsInstance(parsers.detect_parser(claude), parsers.ClaudeJsonlParser)
+        self.assertIsInstance(parsers.detect_parser("not json"), parsers.ScreenParser)
+
+        metadata = {item.agent: item.format_version for item in parsers.parser_metadata()}
+        self.assertIn("claude-code-jsonl", metadata["claude"])
+        self.assertIn("codex-rollout-jsonl", metadata["codex"])
+        self.assertIn("tmux-screen", metadata["generic"])
+
     def test_codex_user_agent_and_complete(self):
         user = json.dumps({"type": "event_msg", "payload": {"type": "user_message", "message": "hello"}})
         agent = json.dumps({"type": "event_msg", "payload": {"type": "agent_message", "message": "hi"}})
@@ -57,6 +73,13 @@ class ParserTests(unittest.TestCase):
             parsers.session_id_from_log_path(path),
             "019e5e21-b1a3-75c2-8521-5391b4ff644b",
         )
+
+    def test_explicit_agent_parser_avoids_cross_format_detection(self):
+        codex_like = json.dumps({"type": "event_msg", "payload": {"type": "agent_message", "message": "hi"}})
+        claude_like = json.dumps({"type": "assistant", "message": {"role": "assistant", "content": "done"}})
+
+        self.assertIsNone(parsers.extract_assistant_text(codex_like, agent="claude"))
+        self.assertIsNone(parsers.extract_assistant_text(claude_like, agent="codex"))
 
 
 if __name__ == "__main__":

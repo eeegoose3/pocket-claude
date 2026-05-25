@@ -23,6 +23,14 @@ Do not paste real `.env` values into issues, PRs, or logs.
 
 ## Parser fixture contract
 
+`parsers.py` exposes versioned parser classes:
+
+- `ClaudeJsonlParser`
+- `CodexJsonlParser`
+- `ScreenParser`
+
+`/doctor` and `pocket-claude doctor` show the active parser compatibility versions so field reports can include the parser contract in use.
+
 `tests/fixtures/claude_sample.jsonl` and `tests/fixtures/codex_sample.jsonl` are small anonymized samples that lock the minimum JSONL compatibility contract:
 
 - user text extraction

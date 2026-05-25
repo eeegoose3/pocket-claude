@@ -63,6 +63,7 @@ class CliTests(unittest.TestCase):
             self.assertIn("APP_ID/APP_SECRET 已配置", report)
             self.assertIn("/file allowlist", report)
             self.assertIn("Approval token", report)
+            self.assertIn("Parser compatibility", report)
             self.assertNotIn(secret, report)
 
 

@@ -21,6 +21,18 @@ venv/bin/pocket-claude init --env /tmp/pocket-claude.env --force
 
 Do not paste real `.env` values into issues, PRs, or logs.
 
+## State persistence
+
+Runtime state is stored in `bridge_state.db` (SQLite). Existing `bindings.json`, `jsonl_ids.json`, and `session_backends.json` files are treated as legacy migration inputs on first load.
+
+State tests cover:
+
+- missing-state bootstrap
+- save/load through SQLite
+- legacy JSON → SQLite migration
+- SQLite winning over stale legacy JSON after migration
+- persisted remote/local mode metadata
+
 ## Parser fixture contract
 
 `parsers.py` exposes versioned parser classes:

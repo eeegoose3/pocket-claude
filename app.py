@@ -107,6 +107,7 @@ class BridgeRuntime:
         self.chat_session_map = {}
         self.session_jsonl_id = {}
         self.session_backend = {}
+        self.session_runtime = {}
         self.session_start_time = {}
         self.lark_client = None
         self.reply_chat_id = None
@@ -146,6 +147,9 @@ class BridgeRuntime:
         self.chat_session_map = loaded.chat_session_map
         self.session_jsonl_id = loaded.session_jsonl_id
         self.session_backend = {k: self.normalize_agent(v) for k, v in loaded.session_backend.items()}
+        self.session_runtime = loaded.session_runtime
+        remote_mode.clear()
+        remote_mode.update(loaded.remote_mode)
         log.info(f"已加载 {len(self.chat_session_map)} 个绑定")
         log.info(f"已加载 {len(self.session_jsonl_id)} 个 agent session ID")
         log.info(f"已加载 {len(self.session_backend)} 个 backend 绑定")
@@ -155,6 +159,8 @@ class BridgeRuntime:
             chat_session_map=self.chat_session_map,
             session_jsonl_id=self.session_jsonl_id,
             session_backend=self.session_backend,
+            remote_mode=dict(remote_mode),
+            session_runtime=self.session_runtime,
         ))
 
     # ── Feishu IM Adapter wrappers ──────────────────────────────
@@ -258,6 +264,7 @@ class BridgeRuntime:
             bridge_sent_window=BRIDGE_SENT_WINDOW,
             chat_session_map=self.chat_session_map,
             session_jsonl_id=self.session_jsonl_id,
+            session_runtime=self.session_runtime,
             session_start_time=self.session_start_time,
             remote_mode=remote_mode,
             bridge_sent_time=self.bridge_sent_time,

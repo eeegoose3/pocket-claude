@@ -82,6 +82,7 @@ def whitelist_allows_sender(allowed_user_id: str | None, sender_open_id: str | N
 def doctor_report(app_id: str | None, app_secret: str | None, allowed_user_id: str | None, claude_dir: str, codex_dir: str) -> str:
     """Return a compact local health/security report."""
     from parsers import parser_metadata
+    from state import DB_FILE
 
     checks = []
     skip_ssl_verify = env_bool("SKIP_SSL_VERIFY", SKIP_SSL_VERIFY)
@@ -103,6 +104,7 @@ def doctor_report(app_id: str | None, app_secret: str | None, allowed_user_id: s
     mark(bool(shutil.which("codex")), "Codex CLI", shutil.which("codex") or "未找到")
     mark(os.path.isdir(claude_dir), "Claude log dir", claude_dir)
     mark(os.path.isdir(codex_dir), "Codex log dir", codex_dir)
+    mark(True, "State store", f"SQLite: {DB_FILE}")
     parser_versions = ", ".join(f"{item.agent}:{item.format_version}" for item in parser_metadata())
     mark(True, "Parser compatibility", parser_versions)
 

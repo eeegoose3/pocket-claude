@@ -5,6 +5,9 @@
 bindings.json
 jsonl_ids.json
 session_backends.json
+bridge_state.db*
+*.sqlite
+*.sqlite3
 
 # Logs (may contain tokens and message content)
 *.log

@@ -37,6 +37,7 @@ class MonitorContext:
     bridge_sent_window: float
     chat_session_map: dict[str, str]
     session_jsonl_id: dict[str, str]
+    session_runtime: dict[str, dict[str, Any]]
     session_start_time: dict[str, float]
     remote_mode: dict[str, bool]
     bridge_sent_time: dict[str, float]
@@ -302,6 +303,20 @@ def jsonl_monitor(ctx):
                 state = jsonl_state.get(sname)
 
                 if not state:
+                    runtime_state = ctx.session_runtime.get(sname, {})
+                    runtime_path = runtime_state.get("jsonl_path")
+                    runtime_offset = runtime_state.get("jsonl_offset")
+                    if runtime_path and os.path.exists(runtime_path):
+                        current_size = os.path.getsize(runtime_path)
+                        pos = runtime_offset if isinstance(runtime_offset, int) else current_size
+                        pos = min(max(pos, 0), current_size)
+                        jsonl_state[sname] = {"path": runtime_path, "pos": pos, "last_change": time.time()}
+                        log.info(f"恢复 {agent} JSONL offset: {sname} → {os.path.basename(runtime_path)}:{pos}")
+                        state = jsonl_state[sname]
+                    else:
+                        state = None
+
+                if not state:
                     jsonl_path = find_jsonl_for_session(sname, ctx)
                     if not jsonl_path:
                         # Agent may be on a startup/login/model-picker screen before logs exist.
@@ -310,6 +325,8 @@ def jsonl_monitor(ctx):
                     # 从文件末尾开始（不发送历史消息）
                     pos = os.path.getsize(jsonl_path)
                     jsonl_state[sname] = {"path": jsonl_path, "pos": pos, "last_change": time.time()}
+                    ctx.session_runtime[sname] = {"jsonl_path": jsonl_path, "jsonl_offset": pos}
+                    ctx.save_bindings()
                     log.info(f"监控 {agent} JSONL: {sname} → {os.path.basename(jsonl_path)}")
                     continue
 
@@ -330,6 +347,8 @@ def jsonl_monitor(ctx):
                         new_content = f.read()
 
                     jsonl_state[sname] = {"path": jsonl_path, "pos": current_size, "last_change": time.time()}
+                    ctx.session_runtime[sname] = {"jsonl_path": jsonl_path, "jsonl_offset": current_size}
+                    ctx.save_bindings()
 
                     # 解析 JSONL 新内容：user 消息检测 + assistant 回复 + 交互式 UI + 系统事件 + 权限确认
                     for line in new_content.strip().split("\n"):
@@ -458,10 +477,11 @@ def jsonl_monitor(ctx):
                         if new_path:
                             new_sid = session_id_from_log_path(new_path, agent)
                             ctx.session_jsonl_id[sname] = new_sid
-                            ctx.save_bindings()
                             # 从新文件末尾开始（跳过已有内容）
                             new_size = os.path.getsize(new_path)
                             jsonl_state[sname] = {"path": new_path, "pos": new_size, "last_change": time.time()}
+                            ctx.session_runtime[sname] = {"jsonl_path": new_path, "jsonl_offset": new_size}
+                            ctx.save_bindings()
                             log.info(f"会话切换: {sname} → {os.path.basename(new_path)}")
                             if is_remote:
                                 for cid in chat_ids:

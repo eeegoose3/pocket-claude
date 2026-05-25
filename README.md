@@ -61,7 +61,7 @@ The bridge is organized around a small runtime object plus focused helper module
 | Monitoring | `monitor.py` | JSONL tailing, screen fallback, permission/image/menu/plan detection |
 | Session runtime | `session_runtime.py`, `tmux.py` | backend inference, tmux creation, send-keys, caffeinate |
 | Backend logic | `backends.py`, `parsers.py`, `history.py` | Claude/Codex log discovery, JSONL parsing, recent history |
-| Safety/state/output | `security.py`, `state.py`, `formatting.py` | security checks, persisted bindings, output cleanup |
+| Safety/state/output | `security.py`, `state.py`, `formatting.py` | security checks, SQLite-backed persisted state, output cleanup |
 
 **Two-layer detection** for maximum reliability:
 
@@ -213,7 +213,7 @@ When Claude Code or Codex needs permission to run a command or edit a file, you'
 | `backends.py` | Claude/Codex/generic backend helpers: commands, log discovery, cwd lookup |
 | `security.py` | Security configuration and validation helpers |
 | `tmux.py` | tmux command helpers |
-| `state.py` | Persistent runtime state helpers |
+| `state.py` | SQLite-backed state store with legacy JSON migration |
 | `formatting.py` | Output cleanup and Markdown/table formatting helpers |
 | `parsers.py` | Versioned `ClaudeJsonlParser` / `CodexJsonlParser` / `ScreenParser` compatibility layer |
 | `tests/test_parsers.py` | Minimal parser compatibility tests |
@@ -234,9 +234,10 @@ When Claude Code or Codex needs permission to run a command or edit a file, you'
 | `tests/test_state.py` | Minimal state persistence tests |
 | `TESTING.md` | Automated and manual smoke-test notes |
 | `.env` | Feishu credentials (not committed) |
-| `bindings.json` | Chat ↔ session mappings (auto-generated, not committed) |
-| `jsonl_ids.json` | Session ↔ agent JSONL/session-id mappings (auto-generated, not committed) |
-| `session_backends.json` | Session ↔ backend mappings (`claude`, `codex`, `generic`) |
+| `bridge_state.db` | SQLite state store: chat bindings, backend bindings, JSONL IDs, runtime mode metadata (auto-generated, not committed) |
+| `bindings.json` | Legacy chat ↔ session mappings; migrated into SQLite on first load if present |
+| `jsonl_ids.json` | Legacy session ↔ agent JSONL/session-id mappings; migrated into SQLite on first load if present |
+| `session_backends.json` | Legacy session ↔ backend mappings; migrated into SQLite on first load if present |
 
 ## Adapting to other IM platforms
 

@@ -35,6 +35,8 @@ class SecurityTests(unittest.TestCase):
 
     def test_doctor_reports_parser_compatibility(self):
         report = security.doctor_report("app", "secret", "user", "/missing/claude", "/missing/codex")
+        self.assertIn("State store", report)
+        self.assertIn("SQLite", report)
         self.assertIn("Parser compatibility", report)
         self.assertIn("claude-code-jsonl-v1", report)
         self.assertIn("codex-rollout-jsonl-v1", report)

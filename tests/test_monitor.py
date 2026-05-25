@@ -17,6 +17,7 @@ class MonitorTests(unittest.TestCase):
             bridge_sent_window=15,
             chat_session_map={},
             session_jsonl_id={},
+            session_runtime={},
             session_start_time={},
             remote_mode={},
             bridge_sent_time={},

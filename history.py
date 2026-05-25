@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 from backends import find_log_by_session_id
-from parsers import extract_assistant_text, extract_user_text
+from parsers import detect_parser, parser_for_agent
 
 log = logging.getLogger("bridge")
 
@@ -17,6 +17,7 @@ def load_recent_history(session_id: str, rounds: int = 3, agent: str | None = No
         log.warning(f"load_recent_history: 找不到 {session_id}.jsonl")
         return []
 
+    parser = parser_for_agent(agent) if agent else None
     messages = []  # [(index, role, text), ...]
     try:
         with open(jsonl_path, "r") as f:
@@ -24,11 +25,12 @@ def load_recent_history(session_id: str, rounds: int = 3, agent: str | None = No
                 line = line.strip()
                 if not line:
                     continue
-                user_text = extract_user_text(line)
+                line_parser = parser or detect_parser(line)
+                user_text = line_parser.extract_user_text(line)
                 if user_text:
                     messages.append((i, "user", user_text))
                     continue
-                assistant_text = extract_assistant_text(line)
+                assistant_text = line_parser.extract_assistant_text(line)
                 if assistant_text:
                     messages.append((i, "assistant", assistant_text))
     except Exception as e:

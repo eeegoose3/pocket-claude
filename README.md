@@ -215,7 +215,7 @@ When Claude Code or Codex needs permission to run a command or edit a file, you'
 | `tmux.py` | tmux command helpers |
 | `state.py` | Persistent runtime state helpers |
 | `formatting.py` | Output cleanup and Markdown/table formatting helpers |
-| `parsers.py` | Pure Claude/Codex JSONL parser functions |
+| `parsers.py` | Versioned `ClaudeJsonlParser` / `CodexJsonlParser` / `ScreenParser` compatibility layer |
 | `tests/test_parsers.py` | Minimal parser compatibility tests |
 | `tests/test_parser_fixtures.py` | Claude/Codex JSONL fixture contract tests |
 | `tests/test_cli.py` | CLI command tests |

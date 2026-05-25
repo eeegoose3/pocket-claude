@@ -30,6 +30,28 @@ class HistoryTests(unittest.TestCase):
             finally:
                 history.find_log_by_session_id = old
 
+    def test_load_recent_history_auto_detects_parser_when_agent_missing(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".jsonl") as f:
+            rows = [
+                {"type": "event_msg", "payload": {"type": "user_message", "message": "u"}},
+                {"type": "event_msg", "payload": {"type": "agent_message", "message": "a"}},
+            ]
+            for row in rows:
+                f.write(json.dumps(row) + "\n")
+            f.flush()
+            old = history.find_log_by_session_id
+            try:
+                history.find_log_by_session_id = lambda sid, agent=None: f.name
+                self.assertEqual(
+                    history.load_recent_history("sid", rounds=1),
+                    [
+                        {"role": "user", "text": "u"},
+                        {"role": "assistant", "text": "a"},
+                    ],
+                )
+            finally:
+                history.find_log_by_session_id = old
+
     def test_load_recent_history_missing_log(self):
         old = history.find_log_by_session_id
         try:

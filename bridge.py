@@ -66,6 +66,7 @@ from backends import (
     resume_command,
     start_command,
 )
+from formatting import clean_ansi, convert_tables_in_text, has_markdown
 from state import BridgeState, load_state, save_state
 from tmux import (
     capture_pane,
@@ -253,110 +254,12 @@ def send_keys(session: str, text: str):
     tmux_send_keys(session, text)
 
 
-# ── ANSI 清理 ──────────────────────────────────────────
-
-def clean_ansi(text: str) -> str:
-    """清理 ANSI 转义序列和 spinner 符号"""
-    text = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", text)
-    text = re.sub(r"\x1b\].*?\x07", "", text)  # OSC sequences
-    text = re.sub(r"[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏◐◑◒◓⣾⣽⣻⢿⡿⣟⣯⣷]", "", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
-
-
 # ── Feishu IM Layer: Message Sending ──────────────────────────────
 # [IM-LAYER] Replace send_feishu_msg() and send_feishu_file() to adapt to other platforms.
 # Key behaviors to preserve:
 #   - Long message splitting (MAX_MSG_LEN)
 #   - Markdown table → vertical list conversion for mobile readability
 #   - Image upload as inline preview (not file attachment)
-
-def _has_markdown(text):
-    """检测文本是否包含 markdown 格式元素"""
-    # 表格、代码块、加粗、标题、链接
-    return bool(re.search(r"\|.+\|.+\||```|^\*\*.*\*\*|^#{1,4}\s|\[.+\]\(.+\)", text, re.MULTILINE))
-
-
-def _md_table_to_vertical(table_text):
-    """把 markdown 表格转成纵向列表格式，适合手机阅读。
-    | 维度 | A | B |       ▎A
-    |------|---|---|  →    维度1：xxx
-    | 维度1| x | y |       维度2：yyy
-    | 维度2| xx| yy|
-                          ▎B
-                          维度1：yyy
-                          维度2：yyy
-    如果第一列是"维度/指标/项目"等标签列，用它做每行的 key。
-    否则把表头当 key，逐行展示。
-    失败返回 None。
-    """
-    lines = [l.strip() for l in table_text.strip().split("\n") if l.strip()]
-    if len(lines) < 3:
-        return None
-
-    def split_row(line):
-        return [c.strip() for c in line.strip("|").split("|")]
-
-    headers = split_row(lines[0])
-    sep = lines[1]
-    if not re.match(r"^\|?[\s\-:|]+(\|[\s\-:|]+)+\|?$", sep):
-        return None
-
-    data_rows = [split_row(line) for line in lines[2:]]
-    if not data_rows:
-        return None
-
-    # 判断是否为"比较型表格"（第一列是维度名，后续列是被比较对象）
-    # 特征：列数>=3，第一列表头含"维度/项目/指标/功能/对比"等词，或为空
-    label_keywords = {"维度", "项目", "指标", "功能", "对比", "特性", "属性", "feature", "dimension", ""}
-    first_header_lower = headers[0].strip("*").lower() if headers else ""
-    is_comparison = len(headers) >= 3 and first_header_lower in label_keywords
-
-    parts = []
-    if is_comparison:
-        # 比较型：每个被比较对象一个块
-        for col_idx in range(1, len(headers)):
-            block = f"**▎{headers[col_idx]}**"
-            for row in data_rows:
-                label = row[0] if len(row) > 0 else ""
-                value = row[col_idx] if col_idx < len(row) else ""
-                if label and value:
-                    block += f"\n{label}：{value}"
-            parts.append(block)
-    else:
-        # 普通表格：每行一个块，用表头做 key
-        for row in data_rows:
-            block_lines = []
-            for i, h in enumerate(headers):
-                value = row[i] if i < len(row) else ""
-                if value:
-                    block_lines.append(f"{h}：{value}")
-            if block_lines:
-                # 用第一个值做块标题
-                first_val = row[0] if row else ""
-                title = f"**▎{first_val}**" if first_val else ""
-                remaining = [f"{headers[i]}：{row[i]}" for i in range(1, min(len(headers), len(row))) if row[i]]
-                if title:
-                    parts.append(title + "\n" + "\n".join(remaining))
-                else:
-                    parts.append("\n".join(block_lines))
-
-    return "\n\n".join(parts)
-
-
-def _convert_tables_in_text(text):
-    """把文本中的 markdown 表格就地替换为纵向列表格式。"""
-    table_pattern = re.compile(
-        r"((?:^[ \t]*\|.+\|[ \t]*$\n?){3,})",
-        re.MULTILINE,
-    )
-
-    def replace_table(m):
-        vertical = _md_table_to_vertical(m.group(1))
-        return vertical if vertical else m.group(1)
-
-    return table_pattern.sub(replace_table, text)
-
 
 def send_feishu_msg(text, target_chat_id=None, use_card=None):
     """[IM-LAYER] Send a text or card message to Feishu.
@@ -376,7 +279,7 @@ def send_feishu_msg(text, target_chat_id=None, use_card=None):
 
     # 自动检测是否需要卡片
     if use_card is None:
-        use_card = _has_markdown(text)
+        use_card = has_markdown(text)
 
     # 分条发送超长消息
     chunks = []
@@ -393,7 +296,7 @@ def send_feishu_msg(text, target_chat_id=None, use_card=None):
         if use_card:
             msg_type = "interactive"
             # 把 markdown 表格转成纵向列表，适合手机阅读
-            chunk = _convert_tables_in_text(chunk)
+            chunk = convert_tables_in_text(chunk)
             content = json.dumps({
                 "config": {"wide_screen_mode": True},
                 "elements": [{"tag": "markdown", "content": chunk}],

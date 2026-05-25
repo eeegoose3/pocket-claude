@@ -66,6 +66,7 @@ from backends import (
     resume_command,
     start_command,
 )
+from state import BridgeState, load_state, save_state
 from tmux import (
     capture_pane,
     list_sessions,
@@ -147,9 +148,6 @@ POLL_INTERVAL = 2          # 对话日志/屏幕轮询间隔（秒）
 CAPTURE_LINES = 50         # capture-pane 行数（/screen 用）
 MAX_MSG_LEN = 4000         # 飞书单条消息最大字符数
 DEFAULT_AGENT = os.getenv("DEFAULT_AGENT", "claude").lower()  # claude / codex / generic
-BIND_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bindings.json")
-JSONL_ID_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "jsonl_ids.json")
-BACKEND_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "session_backends.json")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -203,6 +201,26 @@ def backend_display(session_name: str | None) -> str:
 
 
 
+# ── 绑定持久化 ────────────────────────────────────────────
+
+def load_bindings():
+    global chat_session_map, session_jsonl_id, session_backend
+    loaded = load_state()
+    chat_session_map = loaded.chat_session_map
+    session_jsonl_id = loaded.session_jsonl_id
+    session_backend = {k: normalize_agent(v) for k, v in loaded.session_backend.items()}
+    log.info(f"已加载 {len(chat_session_map)} 个绑定")
+    log.info(f"已加载 {len(session_jsonl_id)} 个 agent session ID")
+    log.info(f"已加载 {len(session_backend)} 个 backend 绑定")
+
+
+def save_bindings():
+    save_state(BridgeState(
+        chat_session_map=chat_session_map,
+        session_jsonl_id=session_jsonl_id,
+        session_backend=session_backend,
+    ))
+
 # ── caffeinate 防睡眠 ───────────────────────────────────────
 
 def start_caffeinate():
@@ -226,53 +244,6 @@ def stop_caffeinate():
         caffeinate_proc.wait()
         log.info("caffeinate 已停止")
         caffeinate_proc = None
-
-# ── 绑定持久化 ────────────────────────────────────────────
-
-def load_bindings():
-    global chat_session_map, session_jsonl_id, session_backend
-    if os.path.exists(BIND_FILE):
-        try:
-            with open(BIND_FILE, "r") as f:
-                chat_session_map = json.load(f)
-            log.info(f"已加载 {len(chat_session_map)} 个绑定")
-        except Exception as e:
-            log.error(f"加载绑定文件失败: {e}")
-    if os.path.exists(JSONL_ID_FILE):
-        try:
-            with open(JSONL_ID_FILE, "r") as f:
-                session_jsonl_id = json.load(f)
-            log.info(f"已加载 {len(session_jsonl_id)} 个 agent session ID")
-        except Exception as e:
-            log.error(f"加载 agent session ID 文件失败: {e}")
-    if os.path.exists(BACKEND_FILE):
-        try:
-            with open(BACKEND_FILE, "r") as f:
-                session_backend = {
-                    k: normalize_agent(v) for k, v in json.load(f).items()
-                }
-            log.info(f"已加载 {len(session_backend)} 个 backend 绑定")
-        except Exception as e:
-            log.error(f"加载 backend 文件失败: {e}")
-
-
-def save_bindings():
-    try:
-        with open(BIND_FILE, "w") as f:
-            json.dump(chat_session_map, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        log.error(f"保存绑定文件失败: {e}")
-    try:
-        with open(JSONL_ID_FILE, "w") as f:
-            json.dump(session_jsonl_id, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        log.error(f"保存 agent session ID 文件失败: {e}")
-    try:
-        with open(BACKEND_FILE, "w") as f:
-            json.dump(session_backend, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        log.error(f"保存 backend 文件失败: {e}")
-
 
 # ── tmux 操作 ──────────────────────────────────────────
 

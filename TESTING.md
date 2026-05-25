@@ -3,7 +3,7 @@
 ## Automated checks
 
 ```bash
-python3 -m py_compile bridge.py backends.py parsers.py security.py tmux.py state.py formatting.py commands.py monitor.py feishu_adapter.py remote_mode.py history.py session_runtime.py
+python3 -m py_compile bridge.py app.py backends.py parsers.py security.py tmux.py state.py formatting.py commands.py monitor.py feishu_adapter.py remote_mode.py history.py session_runtime.py
 python3 -m unittest discover -v
 git diff --check
 ```

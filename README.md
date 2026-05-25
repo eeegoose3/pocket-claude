@@ -166,7 +166,8 @@ When Claude Code or Codex needs permission to run a command or edit a file, you'
 
 | File | Description |
 |------|-------------|
-| `bridge.py` | Runtime bridge bootstrap and lifecycle wiring |
+| `bridge.py` | Thin executable entry point |
+| `app.py` | BridgeRuntime application state, context wiring, and lifecycle startup |
 | `feishu_adapter.py` | Feishu/Lark message, file, chat, inbound event, and reconnect adapter |
 | `commands.py` | Command routing for `/start`, `/resume`, `/screen`, approvals, and text forwarding |
 | `monitor.py` | Background JSONL/screen monitor, permission/image/menu detection |
@@ -180,6 +181,7 @@ When Claude Code or Codex needs permission to run a command or edit a file, you'
 | `formatting.py` | Output cleanup and Markdown/table formatting helpers |
 | `parsers.py` | Pure Claude/Codex JSONL parser functions |
 | `tests/test_parsers.py` | Minimal parser compatibility tests |
+| `tests/test_app.py` | Minimal BridgeRuntime wiring tests |
 | `tests/test_backends.py` | Minimal backend helper tests |
 | `tests/test_commands.py` | Minimal command routing tests |
 | `tests/test_feishu_adapter.py` | Minimal Feishu adapter tests |
@@ -225,7 +227,7 @@ See `TESTING.md` for automated checks and manual smoke-test notes.
 
 
 ```bash
-python3 -m py_compile bridge.py backends.py parsers.py security.py tmux.py state.py formatting.py commands.py monitor.py feishu_adapter.py remote_mode.py history.py session_runtime.py
+python3 -m py_compile bridge.py app.py backends.py parsers.py security.py tmux.py state.py formatting.py commands.py monitor.py feishu_adapter.py remote_mode.py history.py session_runtime.py
 python3 -m unittest discover -v
 ```
 

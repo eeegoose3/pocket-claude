@@ -1,0 +1,5 @@
+{"type":"event_msg","payload":{"type":"user_message","message":"hello codex"}}
+{"type":"event_msg","payload":{"type":"agent_message","message":"hi from codex"}}
+{"type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"call_1","arguments":"{\"cmd\":\"git fetch\",\"sandbox_permissions\":\"require_escalated\",\"justification\":\"Need network\"}"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"call_1","output":"ok"}}
+{"type":"event_msg","payload":{"type":"task_complete"}}

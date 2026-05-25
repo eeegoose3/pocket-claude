@@ -82,16 +82,20 @@ def whitelist_allows_sender(allowed_user_id: str | None, sender_open_id: str | N
 def doctor_report(app_id: str | None, app_secret: str | None, allowed_user_id: str | None, claude_dir: str, codex_dir: str) -> str:
     """Return a compact local health/security report."""
     checks = []
+    skip_ssl_verify = env_bool("SKIP_SSL_VERIFY", SKIP_SSL_VERIFY)
+    allow_all_users = env_bool("ALLOW_ALL_USERS", ALLOW_ALL_USERS)
+    approval_token = os.getenv("APPROVAL_TOKEN", APPROVAL_TOKEN)
+    file_allow_dirs = os.getenv("FILE_ALLOW_DIRS", FILE_ALLOW_DIRS)
 
     def mark(ok, label, detail=""):
         checks.append(f"{'✅' if ok else '⚠️'} {label}" + (f": {detail}" if detail else ""))
 
-    allow_dirs = configured_file_allow_dirs()
+    allow_dirs = configured_file_allow_dirs(file_allow_dirs)
     mark(bool(app_id and app_secret), "Feishu credentials", "APP_ID/APP_SECRET 已配置" if app_id and app_secret else "缺少 APP_ID 或 APP_SECRET")
-    mark(bool(allowed_user_id) or ALLOW_ALL_USERS, "User whitelist", "ALLOWED_USER_ID 已配置" if allowed_user_id else "ALLOW_ALL_USERS=true，所有用户可控制")
-    mark(not SKIP_SSL_VERIFY, "SSL verification", "开启" if not SKIP_SSL_VERIFY else "已关闭，仅建议代理 MITM 调试时使用")
+    mark(bool(allowed_user_id) or allow_all_users, "User whitelist", "ALLOWED_USER_ID 已配置" if allowed_user_id else "ALLOW_ALL_USERS=true，所有用户可控制")
+    mark(not skip_ssl_verify, "SSL verification", "开启" if not skip_ssl_verify else "已关闭，仅建议代理 MITM 调试时使用")
     mark(bool(allow_dirs), "/file allowlist", ", ".join(allow_dirs) if allow_dirs else "未配置，/file 用户命令默认关闭")
-    mark(bool(APPROVAL_TOKEN), "Approval token", "已启用 /y <token>" if APPROVAL_TOKEN else "未启用，/y /n 无二次口令")
+    mark(bool(approval_token), "Approval token", "已启用 /y <token>" if approval_token else "未启用，/y /n 无二次口令")
     mark(bool(shutil.which("tmux")), "tmux", shutil.which("tmux") or "未找到")
     mark(bool(shutil.which("claude")), "Claude Code CLI", shutil.which("claude") or "未找到")
     mark(bool(shutil.which("codex")), "Codex CLI", shutil.which("codex") or "未找到")

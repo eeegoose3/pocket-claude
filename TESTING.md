@@ -3,14 +3,39 @@
 ## Automated checks
 
 ```bash
-python3 -m py_compile bridge.py app.py backends.py parsers.py security.py tmux.py state.py formatting.py commands.py monitor.py feishu_adapter.py remote_mode.py history.py session_runtime.py
+python3 -m py_compile bridge.py app.py cli.py backends.py parsers.py security.py tmux.py state.py formatting.py commands.py monitor.py feishu_adapter.py remote_mode.py history.py session_runtime.py
 python3 -m unittest discover -v
 git diff --check
 ```
 
+## Local CLI checks
+
+After installing in editable mode:
+
+```bash
+venv/bin/pip install -e .
+venv/bin/pocket-claude version
+venv/bin/pocket-claude doctor --env .env
+venv/bin/pocket-claude init --env /tmp/pocket-claude.env --force
+```
+
+Do not paste real `.env` values into issues, PRs, or logs.
+
+## Parser fixture contract
+
+`tests/fixtures/claude_sample.jsonl` and `tests/fixtures/codex_sample.jsonl` are small anonymized samples that lock the minimum JSONL compatibility contract:
+
+- user text extraction
+- assistant text extraction
+- permission/tool-pending detection
+- tool-result matching
+- turn-complete/system-event detection
+
 ## Manual Feishu + tmux smoke test
 
 Date: 2026-05-25
+
+Latest manual smoke test was run after the `BridgeRuntime` refactor on merged `main`.
 
 Environment:
 - macOS
@@ -21,7 +46,7 @@ Environment:
 
 Verified:
 - `/doctor` returns configuration and dependency status
-- `/start codex test /Users/chouduck/funny` creates a tmux session and Feishu chat
+- `/start codex test /Users/chouduck/funny` and `/start codex rt-test /Users/chouduck/funny` create tmux sessions and Feishu chats
 - Sending `你好，回复OK` from Feishu reaches Codex
 - Codex response is pushed back to Feishu
 - Turn-complete notification is pushed back to Feishu

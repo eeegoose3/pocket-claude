@@ -54,7 +54,6 @@ from backends import (
     CLAUDE_PROJECTS_DIR,
     CODEX_SESSIONS_DIR,
     backend_display as backend_display_for_agent,
-    find_log_by_session_id,
     infer_backend_from_command,
     normalize_agent as normalize_agent_value,
 )
@@ -85,10 +84,7 @@ from security import (
     ALLOW_ALL_USERS,
     SKIP_SSL_VERIFY,
 )
-from parsers import (
-    extract_assistant_text,
-    extract_user_text,
-)
+from history import load_recent_history
 
 # SSL 校验默认开启。只有在用户明确配置 SKIP_SSL_VERIFY=true 时，才为代理 MITM 场景跳过校验。
 if SKIP_SSL_VERIFY:
@@ -367,69 +363,6 @@ def handle_command(text, msg_chat_id):
 
 
 # ── JSONL 对话监控（后台线程）─────────────────────────────────
-
-
-def load_recent_history(session_id, rounds=3, agent: str | None = None):
-    """从 JSONL 文件中读取最近 N 轮对话（1 轮 = 1 条 user + 1 条 assistant）。
-    返回按时间正序排列的列表：[{"role": "user", "text": "..."}, {"role": "assistant", "text": "..."}, ...]
-    """
-    # 定位 JSONL 文件
-    jsonl_path = find_log_by_session_id(session_id, agent)
-    if not jsonl_path:
-        log.warning(f"load_recent_history: 找不到 {session_id}.jsonl")
-        return []
-
-    # 读取所有行，提取 user 和 assistant 消息
-    messages = []  # [(index, role, text), ...]
-    try:
-        with open(jsonl_path, "r") as f:
-            for i, line in enumerate(f):
-                line = line.strip()
-                if not line:
-                    continue
-                user_text = extract_user_text(line)
-                if user_text:
-                    messages.append((i, "user", user_text))
-                    continue
-                assistant_text = extract_assistant_text(line)
-                if assistant_text:
-                    messages.append((i, "assistant", assistant_text))
-    except Exception as e:
-        log.error(f"load_recent_history: 读取 JSONL 失败: {e}")
-        return []
-
-    if not messages:
-        return []
-
-    # 从后往前配对：找最近的 rounds 轮（1 轮 = 1 user + 1 assistant）
-    rounds_collected = []  # [(user_msg, assistant_msg), ...]
-    idx = len(messages) - 1
-    while idx >= 0 and len(rounds_collected) < rounds:
-        # 先找一条 assistant
-        while idx >= 0 and messages[idx][1] != "assistant":
-            idx -= 1
-        if idx < 0:
-            break
-        assistant_msg = messages[idx]
-        idx -= 1
-        # 再找一条 user
-        while idx >= 0 and messages[idx][1] != "user":
-            idx -= 1
-        if idx < 0:
-            break
-        user_msg = messages[idx]
-        idx -= 1
-        rounds_collected.append((user_msg, assistant_msg))
-
-    # 翻转为时间正序（按轮翻转，保持每轮内 user→assistant 顺序）
-    rounds_collected.reverse()
-    result = []
-    for user_msg, assistant_msg in rounds_collected:
-        result.append({"role": "user", "text": user_msg[2]})
-        result.append({"role": "assistant", "text": assistant_msg[2]})
-    return result
-
-
 
 
 def build_monitor_context() -> MonitorContext:

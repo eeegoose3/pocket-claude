@@ -183,6 +183,27 @@ def create_tmux_and_run(session_name, command):
     return runtime_create_tmux_and_run(session_name, command)
 
 
+# ── 绑定持久化 ────────────────────────────────────────────
+
+def load_bindings():
+    global chat_session_map, session_jsonl_id, session_backend
+    loaded = load_state()
+    chat_session_map = loaded.chat_session_map
+    session_jsonl_id = loaded.session_jsonl_id
+    session_backend = {k: normalize_agent(v) for k, v in loaded.session_backend.items()}
+    log.info(f"已加载 {len(chat_session_map)} 个绑定")
+    log.info(f"已加载 {len(session_jsonl_id)} 个 agent session ID")
+    log.info(f"已加载 {len(session_backend)} 个 backend 绑定")
+
+
+def save_bindings():
+    save_state(BridgeState(
+        chat_session_map=chat_session_map,
+        session_jsonl_id=session_jsonl_id,
+        session_backend=session_backend,
+    ))
+
+
 # ── Feishu IM Adapter wrappers ──────────────────────────────
 
 def reset_disconnect_time():

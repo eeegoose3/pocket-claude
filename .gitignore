@@ -4,6 +4,7 @@
 # User-specific runtime data
 bindings.json
 jsonl_ids.json
+session_backends.json
 
 # Logs (may contain tokens and message content)
 *.log

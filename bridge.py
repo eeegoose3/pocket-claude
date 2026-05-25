@@ -1,19 +1,19 @@
 """
-tmux-bridge: Control Claude Code remotely from your phone via IM (Feishu/Lark)
+tmux-bridge: Control Claude Code, Codex, or generic CLI agents from your phone via IM (Feishu/Lark)
 
 Architecture:
-  Phone (Feishu) ←→ [WebSocket] ←→ bridge.py ←→ [tmux send-keys] ←→ Claude Code
+  Phone (Feishu) ←→ [WebSocket] ←→ bridge.py ←→ [tmux send-keys] ←→ CLI agent
                                         ↑
-                                  JSONL monitor (reads Claude's conversation logs)
+                         backend monitor (Claude JSONL / Codex JSONL / screen)
 
 Two-layer detection:
-  - JSONL layer: parses Claude Code's conversation log files for structured events
-    (AskUserQuestion, ExitPlanMode, tool_use, system events) — faster and richer
+  - JSONL layer: parses Claude Code and Codex conversation logs for structured events
+    (messages, tool/permission events, system events) — faster and richer
   - Screen layer: captures tmux pane content as fallback/supplement
 
 Remote mode state machine:
   Local (default) → Remote: triggered by sending a message from IM
-  Remote → Local: triggered by detecting local keyboard input in JSONL
+  Remote → Local: triggered by detecting local keyboard input in Claude/Codex JSONL
 
 IM Layer (Feishu-specific, replace these to adapt to other platforms):
   - send_feishu_msg()          — Send text/card message to IM
@@ -25,8 +25,8 @@ IM Layer (Feishu-specific, replace these to adapt to other platforms):
 
 Core Logic (platform-agnostic):
   - tmux operations            — send_keys, capture_pane, etc.
-  - JSONL parsing              — extract_*_text, extract_interactive_ui, etc.
-  - jsonl_monitor()            — Background thread monitoring Claude's JSONL files
+  - Backend parsing            — Claude/Codex JSONL + generic screen fallback
+  - jsonl_monitor()            — Background thread monitoring logs/screens
   - handle_command()           — Command routing (/help, /screen, /y, /n, etc.)
   - Remote mode management     — enter/exit_remote_mode, ensure_remote_mode
 
@@ -34,8 +34,9 @@ Usage: cd ~/Claude_code/tmux-bridge && venv/bin/python bridge.py
 Requires: .env with APP_ID, APP_SECRET, ALLOWED_USER_ID (see .env.example)
 """
 
+from __future__ import annotations
+
 import atexit
-import glob
 import hashlib
 import json
 import logging
@@ -47,22 +48,62 @@ import subprocess
 import threading
 import time
 
-# Clash 代理使用自签证书做 HTTPS MITM，Python 默认不信任，需要跳过验证
-ssl._create_default_https_context = ssl._create_unverified_context
+from dotenv import load_dotenv
 
-# Patch requests 和 websockets，让它们也跳过 SSL 验证
+load_dotenv()
+
+from backends import (
+    AGENT_ALIASES,
+    BACKENDS,
+    CLAUDE_PROJECTS_DIR,
+    CODEX_SESSIONS_DIR,
+    backend_display as backend_display_for_agent,
+    find_cwd_for_session_id,
+    find_log_by_session_id,
+    infer_backend_from_command,
+    jsonl_candidates_for_agent,
+    normalize_agent as normalize_agent_value,
+    resume_command,
+    start_command,
+)
+from security import (
+    ALLOW_ALL_USERS,
+    SKIP_SSL_VERIFY,
+    approval_token_ok,
+    doctor_report,
+    is_user_file_allowed,
+    validate_session_name,
+    whitelist_allows_sender,
+)
+from parsers import (
+    check_tool_result,
+    extract_assistant_text,
+    extract_image_write,
+    extract_interactive_ui,
+    extract_screenshot_path,
+    extract_system_event,
+    extract_user_text,
+    is_turn_complete,
+    session_id_from_log_path,
+)
+
+# SSL 校验默认开启。只有在用户明确配置 SKIP_SSL_VERIFY=true 时，才为代理 MITM 场景跳过校验。
+if SKIP_SSL_VERIFY:
+    ssl._create_default_https_context = ssl._create_unverified_context
+
 import requests as _requests
 import websockets as _websockets
 
-_orig_requests_post = _requests.post
-def _patched_post(*args, **kwargs):
-    kwargs.setdefault("verify", False)
-    return _orig_requests_post(*args, **kwargs)
-_requests.post = _patched_post
+if SKIP_SSL_VERIFY:
+    _orig_requests_post = _requests.post
+    def _patched_post(*args, **kwargs):
+        kwargs.setdefault("verify", False)
+        return _orig_requests_post(*args, **kwargs)
+    _requests.post = _patched_post
 
 _orig_ws_connect = _websockets.connect
 def _patched_ws_connect(*args, **kwargs):
-    if "ssl" not in kwargs:
+    if SKIP_SSL_VERIFY and "ssl" not in kwargs:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
@@ -85,23 +126,21 @@ from lark_oapi.api.im.v1 import (
     CreateFileRequest, CreateFileRequestBody,          # Upload files
     ListMessageRequest,                                # Pull message history (for reconnect recovery)
 )
-from dotenv import load_dotenv
 
 # ── 配置 ──────────────────────────────────────────────
-
-load_dotenv()
 
 # Feishu app credentials (create at https://open.feishu.cn/app)
 APP_ID = os.getenv("APP_ID")           # Feishu app ID
 APP_SECRET = os.getenv("APP_SECRET")   # Feishu app secret
 ALLOWED_USER_ID = os.getenv("ALLOWED_USER_ID")  # Only accept messages from this user (open_id)
 
-POLL_INTERVAL = 2          # JSONL 轮询间隔（秒）
+POLL_INTERVAL = 2          # 对话日志/屏幕轮询间隔（秒）
 CAPTURE_LINES = 50         # capture-pane 行数（/screen 用）
 MAX_MSG_LEN = 4000         # 飞书单条消息最大字符数
-CLAUDE_PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
+DEFAULT_AGENT = os.getenv("DEFAULT_AGENT", "claude").lower()  # claude / codex / generic
 BIND_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bindings.json")
 JSONL_ID_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "jsonl_ids.json")
+BACKEND_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "session_backends.json")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -113,8 +152,9 @@ log = logging.getLogger("bridge")
 # ── 全局状态 ────────────────────────────────────────────
 
 chat_session_map = {}       # {chat_id: session_name} 对话↔session 绑定
-session_jsonl_id = {}       # {session_name: claude_session_id} 精确锁定 JSONL 文件
-session_start_time = {}     # {session_name: timestamp} /start 启动时间，用于识别新 JSONL
+session_jsonl_id = {}       # {session_name: agent_session_id} 精确锁定 JSONL 文件
+session_backend = {}        # {session_name: "claude"|"codex"|"generic"} 每个 tmux session 使用的 CLI backend
+session_start_time = {}     # {session_name: timestamp} /start 启动时间，用于识别新日志
 lark_client = None          # 飞书 API 客户端
 _reply_chat_id = None       # 当前命令的回复目标 chat_id（临时）
 seen_message_ids = set()    # 飞书消息去重（防止重复事件）
@@ -122,8 +162,37 @@ caffeinate_proc = None      # caffeinate 子进程，阻止 Mac 睡眠
 last_disconnect_time = 0    # WebSocket 上次断连时间戳
 last_connect_time = 0       # WebSocket 上次连接时间戳
 remote_mode = {}            # {session_name: bool} 远程模式（True = 推送到飞书）
-bridge_sent_time = {}       # {session_name: float} bridge 最近一次向 Claude 发送的时间
-BRIDGE_SENT_WINDOW = 15     # 秒，此窗口内的 JSONL user 消息视为 bridge 发送
+bridge_sent_time = {}       # {session_name: float} bridge 最近一次向 CLI 发送的时间
+BRIDGE_SENT_WINDOW = 15     # 秒，此窗口内的日志 user 消息视为 bridge 发送
+
+
+# ── CLI backend 抽象 ───────────────────────────────────────────
+
+
+def normalize_agent(agent: str | None) -> str:
+    return normalize_agent_value(agent, DEFAULT_AGENT)
+
+
+def get_backend(session_name: str | None) -> str:
+    """Return backend for a tmux session, inferring from the running pane if needed."""
+    if session_name and session_name in session_backend:
+        return normalize_agent(session_backend[session_name])
+
+    inferred = None
+    if session_name:
+        ok, pane_cmd = tmux_run(["display-message", "-t", session_name, "-p", "#{pane_current_command}"])
+        if ok:
+            inferred = infer_backend_from_command(pane_cmd, DEFAULT_AGENT)
+    backend = normalize_agent(inferred or DEFAULT_AGENT)
+    if session_name:
+        session_backend[session_name] = backend
+    return backend
+
+
+def backend_display(session_name: str | None) -> str:
+    return backend_display_for_agent(get_backend(session_name))
+
+
 
 # ── caffeinate 防睡眠 ───────────────────────────────────────
 
@@ -152,7 +221,7 @@ def stop_caffeinate():
 # ── 绑定持久化 ────────────────────────────────────────────
 
 def load_bindings():
-    global chat_session_map, session_jsonl_id
+    global chat_session_map, session_jsonl_id, session_backend
     if os.path.exists(BIND_FILE):
         try:
             with open(BIND_FILE, "r") as f:
@@ -164,9 +233,18 @@ def load_bindings():
         try:
             with open(JSONL_ID_FILE, "r") as f:
                 session_jsonl_id = json.load(f)
-            log.info(f"已加载 {len(session_jsonl_id)} 个 JSONL ID")
+            log.info(f"已加载 {len(session_jsonl_id)} 个 agent session ID")
         except Exception as e:
-            log.error(f"加载 JSONL ID 文件失败: {e}")
+            log.error(f"加载 agent session ID 文件失败: {e}")
+    if os.path.exists(BACKEND_FILE):
+        try:
+            with open(BACKEND_FILE, "r") as f:
+                session_backend = {
+                    k: normalize_agent(v) for k, v in json.load(f).items()
+                }
+            log.info(f"已加载 {len(session_backend)} 个 backend 绑定")
+        except Exception as e:
+            log.error(f"加载 backend 文件失败: {e}")
 
 
 def save_bindings():
@@ -179,7 +257,12 @@ def save_bindings():
         with open(JSONL_ID_FILE, "w") as f:
             json.dump(session_jsonl_id, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        log.error(f"保存 JSONL ID 文件失败: {e}")
+        log.error(f"保存 agent session ID 文件失败: {e}")
+    try:
+        with open(BACKEND_FILE, "w") as f:
+            json.dump(session_backend, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        log.error(f"保存 backend 文件失败: {e}")
 
 
 # ── tmux 操作 ──────────────────────────────────────────
@@ -493,26 +576,8 @@ def send_feishu_file(file_path, target_chat_id=None):
 
 # ── tmux session 创建 ────────────────────────────────────────
 
-def find_cwd_for_session_id(session_id):
-    """根据 Claude Code session-id 查找对应的项目目录"""
-    # 在 ~/.claude/projects/ 下搜索 JSONL 文件
-    pattern = os.path.join(CLAUDE_PROJECTS_DIR, "**", f"{session_id}.jsonl")
-    matches = glob.glob(pattern, recursive=True)
-    if not matches:
-        return None
-    # JSONL 第一行可能是 snapshot 元数据，cwd 在后面几行，扫描前 20 行
-    try:
-        with open(matches[0], "r") as f:
-            for i, line in enumerate(f):
-                if i >= 20:
-                    break
-                d = json.loads(line)
-                cwd = d.get("cwd")
-                if cwd:
-                    return cwd
-    except Exception:
-        pass
-    return None
+
+
 
 
 def create_tmux_and_run(session_name, command):
@@ -564,9 +629,10 @@ def enter_remote_mode(sname, chat_ids):
     """进入远程模式：推送最近 3 轮对话上下文到飞书"""
     remote_mode[sname] = True
     log.info(f"[远程模式] {sname} 进入远程模式")
+    display = backend_display(sname)
     sid = session_jsonl_id.get(sname)
     if sid:
-        history = load_recent_history(sid)
+        history = load_recent_history(sid, agent=get_backend(sname))
         if history:
             for cid in chat_ids:
                 send_feishu_msg("── 📱 进入远程模式，以下是最近对话 ──", target_chat_id=cid, use_card=False)
@@ -579,7 +645,7 @@ def enter_remote_mode(sname, chat_ids):
                     if len(t) > 500:
                         t = t[:500] + "...（已截断）"
                     for cid in chat_ids:
-                        send_feishu_msg(f"🤖 Claude：{t}", target_chat_id=cid, use_card=True)
+                        send_feishu_msg(f"🤖 {display}：{t}", target_chat_id=cid, use_card=True)
             for cid in chat_ids:
                 send_feishu_msg("── 以上是历史，以下是实时 ──", target_chat_id=cid, use_card=False)
             return
@@ -617,7 +683,7 @@ def handle_command(text, msg_chat_id):
     text = re.sub(r"@_user_\d+\s*", "", text).strip()
 
     # 飞书有时会吞掉 / 前缀，统一补上
-    cmd_words = ("help", "list", "status", "start", "resume", "new", "bind", "switch", "unbind", "screen", "file", "y", "n", "cancel", "caffeinate", "remote", "local")
+    cmd_words = ("help", "doctor", "list", "status", "start", "resume", "new", "bind", "switch", "unbind", "screen", "file", "y", "n", "cancel", "caffeinate", "remote", "local")
     first_word = text.split()[0] if text.split() else ""
     if first_word in cmd_words:
         text = "/" + text
@@ -630,11 +696,12 @@ def handle_command(text, msg_chat_id):
         send_feishu_msg(
             "tmux-bridge 命令：\n\n"
             "【主窗口命令】\n"
+            "/doctor — 检查配置、安全默认值和本机 CLI 依赖\n"
             "/list — 列出所有 tmux session\n"
-            "/status — 全局状态总览（模式、JSONL、连接）\n"
-            "/new <name> — 给已有 session 创建飞书窗口\n"
-            "/start <name> <目录> — 新建 Claude Code 并创建飞书窗口\n"
-            "/resume <name> <session-id> — 恢复历史对话并创建飞书窗口\n\n"
+            "/status — 全局状态总览（backend、模式、日志、连接）\n"
+            "/new <name> [claude|codex|generic] — 给已有 session 创建飞书窗口\n"
+            "/start [claude|codex] <name> <目录> — 新建 CLI 并创建飞书窗口\n"
+            "/resume [claude|codex] <name> <session-id> — 恢复历史对话并创建飞书窗口\n\n"
             "【会话内命令】\n"
             "/screen — 截取屏幕（最后50行）\n"
             "/file <路径> — 发送本地文件到飞书（图片直接显示）\n"
@@ -647,9 +714,14 @@ def handle_command(text, msg_chat_id):
             "/caffeinate — 切换防睡眠（出门时开启）\n"
             "其他文本 — 直接发送到 session\n\n"
             "【模式说明】\n"
-            "发消息到 Claude 时自动进入远程模式（推送回复）\n"
+            "发消息到 CLI 时自动进入远程模式（推送回复）\n"
             "在电脑键盘输入时自动切换到本地模式（停止推送）"
         )
+        return
+
+    # /doctor
+    if text == "/doctor":
+        send_feishu_msg(doctor_report(APP_ID, APP_SECRET, ALLOWED_USER_ID, CLAUDE_PROJECTS_DIR, CODEX_SESSIONS_DIR), use_card=False)
         return
 
     # /caffeinate — 切换 Mac 防睡眠
@@ -689,10 +761,11 @@ def handle_command(text, msg_chat_id):
         all_sessions = set(chat_session_map.values())
         for sname in sorted(all_sessions):
             mode = "🟢 远程" if remote_mode.get(sname, False) else "⚫ 本地"
+            agent = get_backend(sname)
             jid = session_jsonl_id.get(sname)
-            jid_str = jid[:8] if jid else "未绑定"
-            jid_icon = "" if jid else " ⚠️"
-            lines.append(f"{sname}: {mode} | JSONL: {jid_str}{jid_icon}")
+            jid_str = jid[:8] if jid else ("屏幕模式" if agent == "generic" else "未绑定")
+            jid_icon = "" if jid or agent == "generic" else " ⚠️"
+            lines.append(f"{sname}: {mode} | {agent} | log: {jid_str}{jid_icon}")
         # WebSocket 状态
         if last_connect_time > 0:
             ws_ago = int(time.time() - last_connect_time)
@@ -717,33 +790,58 @@ def handle_command(text, msg_chat_id):
         send_feishu_msg("\n".join(lines))
         return
 
-    # /start <name> <目录> — 新建 Claude Code
+    # /start [agent] <name> <目录> — 新建 Claude Code / Codex / generic CLI
     if text.startswith("/start"):
         parts = text.split(maxsplit=2)
         if len(parts) < 3:
-            send_feishu_msg("用法: /start <session名> <项目目录>\n例: /start marketing ~/Claude_code/marketing")
+            send_feishu_msg(
+                "用法: /start [claude|codex] <session名> <项目目录>\n"
+                "例: /start codex marketing ~/Claude_code/marketing\n"
+                "兼容旧用法: /start marketing ~/Claude_code/marketing（使用 DEFAULT_AGENT）"
+            )
             return
-        name, directory = parts[1].strip(), parts[2].strip()
+        maybe_agent = normalize_agent(parts[1])
+        if maybe_agent in ("claude", "codex", "generic") and parts[1].lower() in AGENT_ALIASES:
+            agent = maybe_agent
+            rest = parts[2].split(maxsplit=1)
+            if len(rest) < 2:
+                send_feishu_msg("用法: /start <agent> <session名> <项目目录>")
+                return
+            name, directory = rest[0].strip(), rest[1].strip()
+        else:
+            agent = normalize_agent(DEFAULT_AGENT)
+            name, directory = parts[1].strip(), parts[2].strip()
+        err = validate_session_name(name)
+        if err:
+            send_feishu_msg(err)
+            return
         directory = directory.replace("~", os.path.expanduser("~"))
-        # 记录启动时间，用于后续精确识别新创建的 JSONL 文件
+        if not os.path.isdir(directory):
+            send_feishu_msg(f"项目目录不存在: {directory}")
+            return
+        session_backend[name] = agent
+        save_bindings()
+        # 记录启动时间，用于后续精确识别新创建的日志文件
         session_start_time[name] = time.time()
-        # 如果 tmux session 已存在，在里面启动 Claude Code（如果还没跑的话）
+        cmd = start_command(agent, directory)
+        display = BACKENDS[agent]["display"]
+        # 如果 tmux session 已存在，在里面启动 CLI（如果还没跑的话）
         if session_exists(name):
-            # 检查 session 里是否有 claude 在运行
+            # 检查 session 里是否已有目标 CLI 在运行
             ok, pane_cmd = tmux_run(["display-message", "-t", name, "-p", "#{pane_current_command}"])
-            if ok and "claude" not in pane_cmd.lower():
-                # session 存在但没跑 Claude Code，启动它
-                send_keys(name, f"cd {directory} && claude")
-                send_feishu_msg(f"tmux session '{name}' 已存在，正在启动 Claude Code...")
+            binary = BACKENDS[agent]["binary"]
+            if ok and (not binary or binary not in pane_cmd.lower()):
+                send_keys(name, cmd)
+                send_feishu_msg(f"tmux session '{name}' 已存在，正在启动 {display}...")
                 time.sleep(3)
             else:
-                send_feishu_msg(f"tmux session '{name}' 已存在且 Claude Code 在运行")
+                send_feishu_msg(f"tmux session '{name}' 已存在且 {display} 在运行")
         else:
-            ok, err = create_tmux_and_run(name, f"cd {directory} && claude")
+            ok, err = create_tmux_and_run(name, cmd)
             if not ok:
                 send_feishu_msg(err)
                 return
-            send_feishu_msg(f"已创建 tmux session '{name}'，Claude Code 启动中...")
+            send_feishu_msg(f"已创建 tmux session '{name}'，{display} 启动中...")
             time.sleep(3)
         # 创建飞书会话
         existing = [cid for cid, sname in chat_session_map.items() if sname == name]
@@ -754,42 +852,66 @@ def handle_command(text, msg_chat_id):
         if new_chat_id:
             chat_session_map[new_chat_id] = name
             save_bindings()
-            send_feishu_msg(f"已绑定，去聊天列表找 '{name}'", target_chat_id=new_chat_id)
+            send_feishu_msg(f"已绑定到 {display}，去聊天列表找 '{name}'", target_chat_id=new_chat_id)
         else:
             send_feishu_msg(f"飞书会话创建失败，可手动发 /new {name}")
         return
 
-    # /resume <name> <session-id> — 恢复历史对话
+    # /resume [agent] <name> <session-id> — 恢复历史对话
     if text.startswith("/resume"):
         parts = text.split(maxsplit=2)
         if len(parts) < 3:
-            send_feishu_msg("用法: /resume <session名> <session-id>\n例: /resume ease-video 613bfffb-0f20-46ca-bcd1-7e2a176010d1")
+            send_feishu_msg(
+                "用法: /resume [claude|codex] <session名> <session-id>\n"
+                "例: /resume codex ease-video 019e5e21-b1a3-75c2-8521-5391b4ff644b"
+            )
             return
-        name = parts[1].strip()
+        maybe_agent = normalize_agent(parts[1])
+        if maybe_agent in ("claude", "codex", "generic") and parts[1].lower() in AGENT_ALIASES:
+            agent = maybe_agent
+            rest = parts[2].split(maxsplit=1)
+            if len(rest) < 2:
+                send_feishu_msg("用法: /resume <agent> <session名> <session-id>")
+                return
+            name = rest[0].strip()
+            raw_session_id = rest[1]
+        else:
+            name = parts[1].strip()
+            agent = session_backend.get(name, normalize_agent(DEFAULT_AGENT))
+            raw_session_id = parts[2]
+        err = validate_session_name(name)
+        if err:
+            send_feishu_msg(err)
+            return
         # 飞书可能在长 ID 中插入换行，清理掉所有空白字符
-        session_id = re.sub(r"\s+", "", parts[2])
-        # 记录 session_id，用于精确锁定 JSONL 文件
+        session_id = re.sub(r"\s+", "", raw_session_id)
+        session_backend[name] = agent
+        # 记录 session_id，用于精确锁定日志文件
         session_jsonl_id[name] = session_id
-        # 从 JSONL 查找项目目录
-        cwd = find_cwd_for_session_id(session_id)
+        save_bindings()
+        # 从日志查找项目目录
+        cwd = find_cwd_for_session_id(session_id, agent)
         if not cwd:
             send_feishu_msg(f"找不到 session-id '{session_id}' 对应的对话记录")
             return
+        cmd = resume_command(agent, cwd, session_id)
+        display = BACKENDS[agent]["display"]
         if session_exists(name):
             # session 已存在，在里面启动 resume
             ok, pane_cmd = tmux_run(["display-message", "-t", name, "-p", "#{pane_current_command}"])
-            if ok and "claude" in pane_cmd.lower():
-                send_feishu_msg(f"tmux session '{name}' 里已有 Claude Code 在运行")
+            binary = BACKENDS[agent]["binary"]
+            if ok and binary and binary in pane_cmd.lower():
+                send_feishu_msg(f"tmux session '{name}' 里已有 {display} 在运行")
             else:
-                send_keys(name, f"cd {cwd} && claude --resume {session_id}")
+                send_keys(name, cmd)
                 send_feishu_msg(f"在已有 session '{name}' 中恢复对话...")
         else:
-            ok, err = create_tmux_and_run(name, f"cd {cwd} && claude --resume {session_id}")
+            ok, err = create_tmux_and_run(name, cmd)
             if not ok:
                 send_feishu_msg(err)
                 return
             send_feishu_msg(f"已创建 tmux session '{name}'，正在恢复对话...")
-        # 等 Claude Code 启动
+        # 等 CLI 启动
         time.sleep(3)
         # 创建飞书会话（检查是否已有）
         existing = [cid for cid, sname in chat_session_map.items() if sname == name]
@@ -801,7 +923,7 @@ def handle_command(text, msg_chat_id):
             chat_session_map[new_chat_id] = name
             save_bindings()
             # 加载最近 3 轮对话历史并发送到新群聊
-            history = load_recent_history(session_id)
+            history = load_recent_history(session_id, agent=agent)
             if history:
                 for msg in history:
                     if msg["role"] == "user":
@@ -810,20 +932,28 @@ def handle_command(text, msg_chat_id):
                         text = msg["text"]
                         if len(text) > 500:
                             text = text[:500] + "...（已截断）"
-                        send_feishu_msg(f"🤖 Claude：{text}", target_chat_id=new_chat_id, use_card=True)
+                        send_feishu_msg(f"🤖 {display}：{text}", target_chat_id=new_chat_id, use_card=True)
                 send_feishu_msg("── 以上是历史记录 ──", target_chat_id=new_chat_id, use_card=False)
             send_feishu_msg(f"已绑定，去聊天列表找 '{name}'", target_chat_id=new_chat_id)
         else:
             send_feishu_msg(f"tmux session 已创建，但飞书会话创建失败。可手动发 /new {name}")
         return
 
-    # /new <session> — 自动创建飞书会话并绑定
+    # /new <session> [agent] — 自动创建飞书会话并绑定
     if text.startswith("/new"):
-        parts = text.split(maxsplit=1)
+        parts = text.split()
         if len(parts) < 2:
-            send_feishu_msg("用法: /new <session名>")
+            send_feishu_msg("用法: /new <session名> [claude|codex|generic]")
             return
         name = parts[1].strip()
+        err = validate_session_name(name)
+        if err:
+            send_feishu_msg(err)
+            return
+        if len(parts) >= 3:
+            session_backend[name] = normalize_agent(parts[2])
+        else:
+            get_backend(name)
         if not session_exists(name):
             sessions = list_sessions()
             send_feishu_msg(f"session '{name}' 不存在\n可用: {', '.join(sessions)}")
@@ -841,7 +971,10 @@ def handle_command(text, msg_chat_id):
         chat_session_map[new_chat_id] = name
         save_bindings()
         # 在新会话里发欢迎消息 + 截屏
-        send_feishu_msg(f"已绑定到 session: {name}\n直接在这里发消息即可控制", target_chat_id=new_chat_id)
+        send_feishu_msg(
+            f"已绑定到 session: {name} ({backend_display(name)})\n直接在这里发消息即可控制",
+            target_chat_id=new_chat_id,
+        )
         screen = clean_ansi(capture_pane(name))
         if screen:
             send_feishu_msg(f"📺 当前屏幕:\n{screen}", target_chat_id=new_chat_id)
@@ -850,18 +983,26 @@ def handle_command(text, msg_chat_id):
 
     # /bind <name> 或 /switch <name>（兼容旧命令）
     if text.startswith("/bind") or text.startswith("/switch"):
-        parts = text.split(maxsplit=1)
+        parts = text.split()
         if len(parts) < 2:
-            send_feishu_msg("用法: /bind <session名>")
+            send_feishu_msg("用法: /bind <session名> [claude|codex|generic]")
             return
         name = parts[1].strip()
+        err = validate_session_name(name)
+        if err:
+            send_feishu_msg(err)
+            return
         if not session_exists(name):
             sessions = list_sessions()
             send_feishu_msg(f"session '{name}' 不存在\n可用: {', '.join(sessions)}")
             return
+        if len(parts) >= 3:
+            session_backend[name] = normalize_agent(parts[2])
+        else:
+            get_backend(name)
         chat_session_map[msg_chat_id] = name
         save_bindings()
-        send_feishu_msg(f"已绑定到 session: {name}")
+        send_feishu_msg(f"已绑定到 session: {name} ({backend_display(name)})")
         # 绑定后立即截屏
         screen = clean_ansi(capture_pane(name))
         if screen:
@@ -901,7 +1042,11 @@ def handle_command(text, msg_chat_id):
         if len(parts) < 2:
             send_feishu_msg("用法: /file <文件路径>\n例: /file ~/Documents/report.pdf")
             return
-        send_feishu_file(parts[1].strip())
+        ok, path_or_msg = is_user_file_allowed(parts[1].strip())
+        if not ok:
+            send_feishu_msg(f"⚠️ {path_or_msg}")
+            return
+        send_feishu_file(path_or_msg)
         return
 
     # /remote — 手动进入远程模式
@@ -923,12 +1068,20 @@ def handle_command(text, msg_chat_id):
         return
 
     # /y /n 快捷确认
-    if text in ("/y", "/n"):
-        ensure_remote_mode(bound)
-        answer = text[1]
-        send_confirm(bound, answer)
-        send_feishu_msg(f"已发送: {answer}")
-        return
+    if text.startswith("/y") or text.startswith("/n"):
+        y_parts = text.split()
+        if y_parts[0] not in ("/y", "/n"):
+            # Avoid treating arbitrary /yes-like text as approval.
+            pass
+        elif not approval_token_ok(y_parts):
+            send_feishu_msg("🔐 当前已启用 APPROVAL_TOKEN，请使用 `/y <token>` 或 `/n <token>`")
+            return
+        elif y_parts[0] in ("/y", "/n"):
+            ensure_remote_mode(bound)
+            answer = y_parts[0][1]
+            send_confirm(bound, answer)
+            send_feishu_msg(f"已发送: {answer}")
+            return
 
     # /cancel
     if text == "/cancel":
@@ -1045,37 +1198,34 @@ def verify_jsonl_by_screen(session_name, candidate_files):
     return None
 
 
+
+
+
+
 def find_jsonl_for_session(session_name):
-    """找到 tmux session 中 Claude Code 正在写入的 JSONL 对话文件"""
+    """找到 tmux session 中当前 CLI backend 正在写入的 JSONL 对话文件。
+
+    Claude Code: ~/.claude/projects/<project>/*.jsonl
+    Codex:       ~/.codex/sessions/YYYY/MM/DD/*.jsonl
+    Generic CLI: no structured log, returns None and falls back to screen monitor.
+    """
+    agent = get_backend(session_name)
+    if agent == "generic":
+        return None
+
     # 优先用已知的 session_id 精确匹配（/resume 时记录的）
     known_id = session_jsonl_id.get(session_name)
     if known_id:
-        pattern = os.path.join(CLAUDE_PROJECTS_DIR, "**", f"{known_id}.jsonl")
-        matches = glob.glob(pattern, recursive=True)
-        if matches and os.path.exists(matches[0]):
-            return matches[0]
+        match = find_log_by_session_id(known_id, agent)
+        if match and os.path.exists(match):
+            return match
 
     # 获取 session 的工作目录
     ok, cwd = tmux_run(["display-message", "-t", session_name, "-p", "#{pane_current_path}"])
     if not ok or not cwd:
         return None
 
-    # Claude Code 的项目目录命名规则：路径中的 / _ 空格 都变成 -
-    project_key = re.sub(r"[/_\s]", "-", cwd)
-    project_dir = os.path.join(CLAUDE_PROJECTS_DIR, project_key)
-
-    # 如果精确匹配不到，模糊搜索（目录名包含项目文件夹名）
-    if not os.path.isdir(project_dir):
-        basename = os.path.basename(cwd)
-        for d in os.listdir(CLAUDE_PROJECTS_DIR):
-            if basename in d and os.path.isdir(os.path.join(CLAUDE_PROJECTS_DIR, d)):
-                project_dir = os.path.join(CLAUDE_PROJECTS_DIR, d)
-                break
-        else:
-            return None
-
-    # 找 JSONL 文件
-    jsonl_files = glob.glob(os.path.join(project_dir, "*.jsonl"))
+    jsonl_files = jsonl_candidates_for_agent(agent, cwd)
     if not jsonl_files:
         return None
 
@@ -1086,7 +1236,7 @@ def find_jsonl_for_session(session_name):
         if new_files:
             target = max(new_files, key=os.path.getmtime)
             # 找到了，锁定它，以后不会再变
-            sid = os.path.basename(target).replace(".jsonl", "")
+            sid = session_id_from_log_path(target, agent)
             session_jsonl_id[session_name] = sid
             session_start_time.pop(session_name, None)
             save_bindings()
@@ -1099,13 +1249,13 @@ def find_jsonl_for_session(session_name):
     # 排除已被其他 session 占用的 JSONL，避免同目录下多 session 互相抢文件
     claimed_ids = set(session_jsonl_id.values())
     unclaimed = [f for f in jsonl_files
-                 if os.path.basename(f).replace(".jsonl", "") not in claimed_ids]
+                 if session_id_from_log_path(f, agent) not in claimed_ids]
     candidates = unclaimed if unclaimed else jsonl_files
 
     # 优先：屏幕内容交叉验证（精准匹配）
     verified = verify_jsonl_by_screen(session_name, candidates)
     if verified:
-        sid = os.path.basename(verified).replace(".jsonl", "")
+        sid = session_id_from_log_path(verified, agent)
         session_jsonl_id[session_name] = sid
         save_bindings()
         log.info(f"屏幕验证锁定 JSONL: {session_name} → {sid}")
@@ -1115,278 +1265,40 @@ def find_jsonl_for_session(session_name):
     latest = max(candidates, key=os.path.getmtime)
     if time.time() - os.path.getmtime(latest) > 300:
         return None
-    sid = os.path.basename(latest).replace(".jsonl", "")
+    sid = session_id_from_log_path(latest, agent)
     session_jsonl_id[session_name] = sid
     save_bindings()
     log.info(f"时间排序锁定 JSONL: {session_name} → {sid}")
     return latest
 
 
-def extract_user_text(line_str):
-    """从 JSONL 的一行中提取 user 消息文本"""
-    try:
-        d = json.loads(line_str)
-    except json.JSONDecodeError:
-        return None
-
-    # user 消息的 type 字段为 "user"
-    if d.get("type") != "user":
-        return None
-
-    msg = d.get("message", {})
-    content = msg.get("content")
-
-    if isinstance(content, str):
-        return content.strip() if content.strip() else None
-
-    # content 也可能是列表（和 assistant 类似）
-    if isinstance(content, list):
-        texts = []
-        for item in content:
-            if isinstance(item, str):
-                texts.append(item.strip())
-            elif isinstance(item, dict) and item.get("type") == "text":
-                texts.append(item.get("text", "").strip())
-        result = "\n".join(t for t in texts if t)
-        return result if result else None
-
-    return None
 
 
-def extract_assistant_text(line_str):
-    """从 JSONL 的一行中提取 assistant 的文本回复，忽略 thinking 和 tool_use"""
-    try:
-        d = json.loads(line_str)
-    except json.JSONDecodeError:
-        return None
-
-    # 只处理 assistant 消息
-    role = d.get("role") or d.get("message", {}).get("role")
-    if role != "assistant":
-        return None
-
-    # 内容在 message.content 里
-    msg = d.get("message", d)
-    content = msg.get("content", [])
-
-    if isinstance(content, str):
-        return content.strip() if content.strip() else None
-
-    if isinstance(content, list):
-        texts = []
-        for item in content:
-            if item.get("type") == "text" and item.get("text", "").strip():
-                texts.append(item["text"].strip())
-        return "\n".join(texts) if texts else None
-
-    return None
 
 
-def extract_interactive_ui(line_str):
-    """从 JSONL 行中检测交互式 UI 工具调用。
-    比屏幕检测更早触发：JSONL 写入在终端渲染之前。
-    返回值类型：
-      {"type": "ask", "questions": [...]}           — AskUserQuestion 选择菜单
-      {"type": "plan_exit", "plan": "...", ...}     — ExitPlanMode 计划确认
-      {"type": "tool_pending", "name": "Bash", "id": "...", "detail": "..."}  — 可能需要权限确认的工具调用
-      None — 无交互
-    """
-    try:
-        d = json.loads(line_str)
-    except json.JSONDecodeError:
-        return None
-
-    role = d.get("role") or d.get("message", {}).get("role")
-    if role != "assistant":
-        return None
-
-    msg = d.get("message", d)
-    content = msg.get("content", [])
-    if not isinstance(content, list):
-        return None
-
-    # 收集所有 tool_use（一条 assistant 消息可能包含多个）
-    results = []
-    for item in content:
-        if not isinstance(item, dict) or item.get("type") != "tool_use":
-            continue
-        name = item.get("name", "")
-        inp = item.get("input", {})
-        tool_id = item.get("id", "")
-
-        if name == "AskUserQuestion":
-            results.append({"type": "ask", "questions": inp.get("questions", [])})
-        elif name == "ExitPlanMode":
-            results.append({
-                "type": "plan_exit",
-                "plan": inp.get("plan"),
-                "allowed_prompts": inp.get("allowedPrompts", []),
-            })
-        elif name in ("Bash", "Edit", "Write", "NotebookEdit"):
-            # 可能需要权限确认的工具调用
-            if name == "Bash":
-                detail = inp.get("description") or inp.get("command", "")[:120]
-            elif name == "Edit":
-                detail = inp.get("file_path", "")
-            else:
-                detail = inp.get("file_path", "") or inp.get("notebook_path", "")
-            results.append({"type": "tool_pending", "name": name, "id": tool_id, "detail": detail})
-
-    # 优先返回交互式 UI，其次返回工具调用
-    for r in results:
-        if r["type"] in ("ask", "plan_exit"):
-            return r
-    return results[0] if results else None
 
 
-def extract_image_write(line_str):
-    """检测 assistant 消息中是否有 Write 工具写入图片文件。
-    返回 {"tool_id": str, "path": str} 或 None。
-    """
-    try:
-        d = json.loads(line_str)
-    except json.JSONDecodeError:
-        return None
-
-    role = d.get("role") or d.get("message", {}).get("role")
-    if role != "assistant":
-        return None
-
-    msg = d.get("message", d)
-    content = msg.get("content", [])
-    if not isinstance(content, list):
-        return None
-
-    for item in content:
-        if not isinstance(item, dict) or item.get("type") != "tool_use":
-            continue
-        name = item.get("name", "")
-        if name == "Write":
-            path = item.get("input", {}).get("file_path", "")
-            ext = os.path.splitext(path)[1].lower()
-            if ext in IMAGE_EXTS:
-                return {"tool_id": item.get("id", ""), "path": path}
-        elif name == "mcp__playwright__browser_take_screenshot":
-            return {"tool_id": item.get("id", ""), "path": "__screenshot__"}
-    return None
 
 
-def extract_screenshot_path(line_str, tool_id):
-    """从 Playwright 截图的 tool_result 中提取文件路径。"""
-    try:
-        d = json.loads(line_str)
-    except json.JSONDecodeError:
-        return None
-
-    if d.get("type") != "user":
-        return None
-
-    msg = d.get("message", d)
-    content = msg.get("content", [])
-    if not isinstance(content, list):
-        return None
-
-    for item in content:
-        if item.get("type") == "tool_result" and item.get("tool_use_id") == tool_id:
-            # Playwright 截图结果中可能包含文件路径
-            result_content = item.get("content", "")
-            if isinstance(result_content, str):
-                # 搜索文件路径模式
-                match = re.search(r"(/[^\s\"']+\.(?:png|jpg|jpeg|gif|webp))", result_content)
-                if match:
-                    return match.group(1)
-            elif isinstance(result_content, list):
-                for sub in result_content:
-                    if isinstance(sub, dict) and sub.get("type") == "text":
-                        match = re.search(r"(/[^\s\"']+\.(?:png|jpg|jpeg|gif|webp))", sub.get("text", ""))
-                        if match:
-                            return match.group(1)
-    return None
 
 
-def extract_system_event(line_str):
-    """从 JSONL 行中检测系统事件（上下文压缩、API 错误等）。
-    返回 {"type": "compact", "pre_tokens": N} 或 {"type": "api_error", ...} 或 None
-    """
-    try:
-        d = json.loads(line_str)
-    except json.JSONDecodeError:
-        return None
-
-    if d.get("type") != "system":
-        return None
-
-    subtype = d.get("subtype", "")
-    if subtype in ("compact_boundary", "microcompact_boundary"):
-        meta = d.get("compactMetadata", {})
-        return {"type": "compact", "pre_tokens": meta.get("preTokens", 0), "trigger": meta.get("trigger", "")}
-    elif subtype == "api_error":
-        return {
-            "type": "api_error",
-            "retry_attempt": d.get("retryAttempt", 0),
-            "max_retries": d.get("maxRetries", 10),
-            "retry_in_ms": d.get("retryInMs", 0),
-        }
-
-    return None
 
 
-def check_tool_result(line_str, tool_id):
-    """检查 JSONL 行是否包含指定 tool_id 的 tool_result（表示权限已确认或工具已执行）"""
-    try:
-        d = json.loads(line_str)
-    except json.JSONDecodeError:
-        return False
-
-    if d.get("type") != "user":
-        role = d.get("role") or d.get("message", {}).get("role")
-        if role != "user":
-            return False
-
-    msg = d.get("message", d)
-    content = msg.get("content", [])
-    if not isinstance(content, list):
-        return False
-
-    for item in content:
-        if isinstance(item, dict) and item.get("type") == "tool_result" and item.get("tool_use_id") == tool_id:
-            return True
-    return False
 
 
-def is_turn_complete(line_str):
-    """检测是否为 assistant 的最终回复（纯文本，没有 tool_use = 说完了等输入）"""
-    try:
-        d = json.loads(line_str)
-    except json.JSONDecodeError:
-        return False
-    role = d.get("role") or d.get("message", {}).get("role")
-    if role != "assistant":
-        return False
-    msg = d.get("message", d)
-    content = msg.get("content", [])
-    if isinstance(content, str):
-        return bool(content.strip())
-    if not isinstance(content, list):
-        return False
-    for item in content:
-        if isinstance(item, dict) and item.get("type") == "tool_use":
-            return False  # 还有工具要执行，不算说完
-    return True
 
 
-def load_recent_history(session_id, rounds=3):
+
+
+def load_recent_history(session_id, rounds=3, agent: str | None = None):
     """从 JSONL 文件中读取最近 N 轮对话（1 轮 = 1 条 user + 1 条 assistant）。
     返回按时间正序排列的列表：[{"role": "user", "text": "..."}, {"role": "assistant", "text": "..."}, ...]
     """
     # 定位 JSONL 文件
-    pattern = os.path.join(CLAUDE_PROJECTS_DIR, "**", f"{session_id}.jsonl")
-    matches = glob.glob(pattern, recursive=True)
-    if not matches:
+    jsonl_path = find_log_by_session_id(session_id, agent)
+    if not jsonl_path:
         log.warning(f"load_recent_history: 找不到 {session_id}.jsonl")
         return []
-
-    jsonl_path = matches[0]
 
     # 读取所有行，提取 user 和 assistant 消息
     messages = []  # [(index, role, text), ...]
@@ -1441,6 +1353,7 @@ def load_recent_history(session_id, rounds=3):
 
 # 每个 session 的 JSONL 监控状态
 jsonl_state = {}  # {session_name: {"path": str, "pos": int, "last_change": float}}
+screen_state = {}  # {session_name: {"hash": str, "text": str, "time": float}} generic/screen fallback
 plan_notified = set()  # 已推送过 plan 通知的 session，避免重复推送
 menu_notified = set()  # 已推送过选择菜单通知的 session
 menu_state = {}        # {session_name: [{"num": int, "text": str}, ...]} 当前活跃的选择菜单
@@ -1449,6 +1362,30 @@ pending_permission = {}
 pending_image = {}     # {session_name: {"id": tool_use_id, "path": str, "time": timestamp}}
 PERMISSION_WAIT = 3    # 秒，tool_use 后等多久没有 tool_result 就判定为等权限确认
 STALE_THRESHOLD = 60   # 秒，JSONL 文件超过此时间无变化则检查是否切换了会话
+SCREEN_PUSH_MIN_INTERVAL = 5  # generic backend 屏幕变化最小推送间隔
+
+
+def maybe_push_screen_update(sname, chat_ids, is_remote):
+    """Generic CLI fallback: push cleaned tmux screen when it changes in remote mode."""
+    screen = clean_ansi(capture_pane(sname, lines=CAPTURE_LINES)).strip()
+    if not screen:
+        return
+    digest = hashlib.sha1(screen.encode("utf-8", errors="ignore")).hexdigest()
+    state = screen_state.get(sname, {})
+    if state.get("hash") == digest:
+        return
+    screen_state[sname] = {"hash": digest, "text": screen, "time": time.time()}
+    if not is_remote:
+        return
+    last_push = state.get("push_time", 0)
+    if time.time() - last_push < SCREEN_PUSH_MIN_INTERVAL:
+        return
+    screen_state[sname]["push_time"] = time.time()
+    text = screen
+    if len(text) > 3000:
+        text = text[-3000:]
+    for cid in chat_ids:
+        send_feishu_msg(f"📺 {sname} 屏幕更新:\n{text}", target_chat_id=cid, use_card=False)
 
 
 def parse_menu_options(screen_text):
@@ -1530,10 +1467,10 @@ def find_continuation_jsonl(current_jsonl_path):
 
 
 def jsonl_monitor():
-    """后台监控 Claude Code 的 JSONL 对话文件，有新 assistant 回复时推送到飞书"""
+    """后台监控 Claude/Codex JSONL；generic backend 降级为屏幕变化推送。"""
     global jsonl_state
 
-    log.info("JSONL 对话监控已启动")
+    log.info("对话日志/屏幕监控已启动")
     while True:
         try:
             time.sleep(POLL_INTERVAL)
@@ -1547,17 +1484,27 @@ def jsonl_monitor():
                 session_chats.setdefault(sname, []).append(cid)
 
             for sname, chat_ids in session_chats.items():
+                agent = get_backend(sname)
+                is_remote = remote_mode.get(sname, False)
+
+                # Generic CLI 没有结构化 JSONL：远程模式下用屏幕变化作为通用 fallback。
+                if agent == "generic":
+                    maybe_push_screen_update(sname, chat_ids, is_remote)
+                    continue
+
                 # 查找或更新 JSONL 文件路径
                 state = jsonl_state.get(sname)
 
                 if not state:
                     jsonl_path = find_jsonl_for_session(sname)
                     if not jsonl_path:
+                        # Agent may be on a startup/login/model-picker screen before logs exist.
+                        maybe_push_screen_update(sname, chat_ids, is_remote)
                         continue
                     # 从文件末尾开始（不发送历史消息）
                     pos = os.path.getsize(jsonl_path)
                     jsonl_state[sname] = {"path": jsonl_path, "pos": pos, "last_change": time.time()}
-                    log.info(f"监控 JSONL: {sname} → {os.path.basename(jsonl_path)}")
+                    log.info(f"监控 {agent} JSONL: {sname} → {os.path.basename(jsonl_path)}")
                     continue
 
                 jsonl_path = state["path"]
@@ -1568,8 +1515,6 @@ def jsonl_monitor():
                     jsonl_state.pop(sname, None)
                     session_jsonl_id.pop(sname, None)  # 文件没了，解除锁定
                     continue
-
-                is_remote = remote_mode.get(sname, False)
 
                 # 读取新增内容
                 current_size = os.path.getsize(jsonl_path)
@@ -1705,7 +1650,7 @@ def jsonl_monitor():
                     if time.time() - last_change > STALE_THRESHOLD:
                         new_path = find_continuation_jsonl(jsonl_path)
                         if new_path:
-                            new_sid = os.path.splitext(os.path.basename(new_path))[0]
+                            new_sid = session_id_from_log_path(new_path, agent)
                             session_jsonl_id[sname] = new_sid
                             save_bindings()
                             # 从新文件末尾开始（跳过已有内容）
@@ -1725,6 +1670,10 @@ def jsonl_monitor():
                         if is_remote:
                             if tool_name == "Bash":
                                 hint = f"🔐 等待确认：{sname} 要执行命令\n\n`{detail}`\n\n发 /y 批准 · /n 拒绝"
+                            elif tool_name == "exec_command":
+                                hint = f"🔐 等待确认：{sname} 要执行命令/提权操作\n\n{detail}\n\n发 /y 批准 · /n 拒绝"
+                            elif tool_name == "apply_patch":
+                                hint = f"🔐 等待确认：{sname} 要修改文件\n\n{detail}\n\n发 /y 批准 · /n 拒绝"
                             elif tool_name == "Edit":
                                 hint = f"🔐 等待确认：{sname} 要编辑文件\n\n{detail}\n\n发 /y 批准 · /n 拒绝"
                             else:
@@ -1817,12 +1766,13 @@ def on_message(data):
     msg = event.message
     sender = event.sender
 
-    # 只处理白名单用户
-    if ALLOWED_USER_ID and sender and sender.sender_id:
+    # 只处理白名单用户；除非显式 ALLOW_ALL_USERS=true
+    sender_open_id = None
+    if sender and sender.sender_id:
         sender_open_id = sender.sender_id.open_id
-        if sender_open_id != ALLOWED_USER_ID:
-            log.warning(f"非白名单用户消息，忽略: {sender_open_id}")
-            return
+    if not whitelist_allows_sender(ALLOWED_USER_ID, sender_open_id, ALLOW_ALL_USERS):
+        log.warning(f"非白名单或未配置白名单用户消息，忽略: {sender_open_id}")
+        return
 
     # 只处理文本消息
     if msg.message_type != "text":
@@ -1940,6 +1890,9 @@ def main():
 
     if not APP_ID or not APP_SECRET:
         print("错误: 请在 .env 中配置 APP_ID 和 APP_SECRET")
+        return
+    if not ALLOWED_USER_ID and not ALLOW_ALL_USERS:
+        print("错误: 请在 .env 中配置 ALLOWED_USER_ID；如确需允许所有用户，显式设置 ALLOW_ALL_USERS=true")
         return
 
     # caffeinate 不再自动启动，用户需要时通过 /caffeinate 开启

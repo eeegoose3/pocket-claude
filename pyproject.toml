@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pocket-claude"
+version = "0.2.0"
+description = "Control Claude Code, Codex, or tmux-based CLI agents from your phone."
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [{name = "pocket-claude contributors"}]
+dependencies = [
+    "lark-oapi",
+    "python-dotenv",
+    "requests",
+    "websockets",
+]
+
+[project.scripts]
+pocket-claude = "cli:main"
+
+[tool.setuptools]
+py-modules = [
+    "app",
+    "backends",
+    "bridge",
+    "cli",
+    "commands",
+    "feishu_adapter",
+    "formatting",
+    "history",
+    "monitor",
+    "parsers",
+    "remote_mode",
+    "security",
+    "session_runtime",
+    "state",
+    "tmux",
+]

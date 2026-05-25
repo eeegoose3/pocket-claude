@@ -97,6 +97,7 @@ git clone https://github.com/eeegoose3/pocket-claude.git
 cd pocket-claude
 python3 -m venv venv
 venv/bin/pip install -r requirements.txt
+venv/bin/pip install -e .
 ```
 
 ### Configure
@@ -104,6 +105,9 @@ venv/bin/pip install -r requirements.txt
 ```bash
 cp .env.example .env
 # Edit .env with your Feishu app credentials
+
+# Or create the starter file through the CLI:
+venv/bin/pocket-claude init
 ```
 
 ### Run
@@ -113,9 +117,12 @@ The bridge must run in a tmux session (foreground, not background):
 ```bash
 # Create a dedicated tmux session for the bridge
 tmux new-session -s bridge
-cd ~/path/to/tmux-bridge
-venv/bin/python bridge.py
+cd ~/path/to/pocket-claude
+venv/bin/pocket-claude run
 ```
+
+`venv/bin/python bridge.py` still works as a compatibility entry point.
+Use `venv/bin/pocket-claude doctor` for a local preflight check before starting the bridge.
 
 
 ## Security defaults
@@ -129,6 +136,7 @@ This bridge can control your local terminal, so the defaults are intentionally c
 - tmux session names are restricted to letters, numbers, `.`, `_`, `-` and max 64 chars.
 
 Run `/doctor` in Feishu to check the current configuration and local CLI dependencies.
+From the terminal, run `venv/bin/pocket-claude doctor` for the same local check.
 
 ## Commands
 
@@ -192,6 +200,9 @@ When Claude Code or Codex needs permission to run a command or edit a file, you'
 | File | Description |
 |------|-------------|
 | `bridge.py` | Thin executable entry point |
+| `cli.py` | `pocket-claude` CLI entry point (`run`, `doctor`, `init`, `version`) |
+| `pyproject.toml` | Editable-install metadata and console script definition |
+| `.env.example` | Starter environment template |
 | `app.py` | BridgeRuntime application state, context wiring, and lifecycle startup |
 | `feishu_adapter.py` | Feishu/Lark message, file, chat, inbound event, and reconnect adapter |
 | `commands.py` | Command routing for `/start`, `/resume`, `/screen`, approvals, and text forwarding |
@@ -206,6 +217,9 @@ When Claude Code or Codex needs permission to run a command or edit a file, you'
 | `formatting.py` | Output cleanup and Markdown/table formatting helpers |
 | `parsers.py` | Pure Claude/Codex JSONL parser functions |
 | `tests/test_parsers.py` | Minimal parser compatibility tests |
+| `tests/test_parser_fixtures.py` | Claude/Codex JSONL fixture contract tests |
+| `tests/test_cli.py` | CLI command tests |
+| `tests/fixtures/` | Small anonymized JSONL samples used by parser tests |
 | `tests/test_app.py` | Minimal BridgeRuntime wiring tests |
 | `tests/test_backends.py` | Minimal backend helper tests |
 | `tests/test_commands.py` | Minimal command routing tests |
@@ -253,8 +267,10 @@ See `TESTING.md` for automated checks and manual smoke-test notes.
 
 
 ```bash
-python3 -m py_compile bridge.py app.py backends.py parsers.py security.py tmux.py state.py formatting.py commands.py monitor.py feishu_adapter.py remote_mode.py history.py session_runtime.py
+python3 -m py_compile bridge.py app.py cli.py backends.py parsers.py security.py tmux.py state.py formatting.py commands.py monitor.py feishu_adapter.py remote_mode.py history.py session_runtime.py
 python3 -m unittest discover -v
+venv/bin/pocket-claude version
+venv/bin/pocket-claude doctor
 ```
 
 ## Known limitations

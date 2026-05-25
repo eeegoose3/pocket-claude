@@ -3,7 +3,7 @@
 ## Automated checks
 
 ```bash
-python3 -m py_compile bridge.py app.py cli.py backends.py parsers.py security.py tmux.py state.py formatting.py commands.py monitor.py feishu_adapter.py remote_mode.py history.py session_runtime.py
+python3 -m py_compile bridge.py app.py cli.py backends.py parsers.py security.py tmux.py state.py formatting.py commands.py monitor.py im_adapter.py feishu_adapter.py remote_mode.py history.py session_runtime.py
 python3 -m unittest discover -v
 git diff --check
 ```
@@ -50,6 +50,16 @@ State tests cover:
 - permission/tool-pending detection
 - tool-result matching
 - turn-complete/system-event detection
+
+## IM adapter boundary
+
+The bridge core depends on `im_adapter.IMAdapter` / `IMContext`; Feishu/Lark is implemented in `feishu_adapter.FeishuAdapter`.
+
+Tests cover:
+
+- inbound Feishu text parsing and whitelist filtering
+- safe no-client send behavior
+- BridgeRuntime adapter injection, so core runtime behavior can be tested without a live Feishu SDK client
 
 ## Manual Feishu + tmux smoke test
 

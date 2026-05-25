@@ -16,7 +16,7 @@ class RemoteModeTests(unittest.TestCase):
             backend_display=lambda name: "Codex",
             get_backend=lambda name: "codex",
             load_recent_history=lambda sid, agent=None: history or [],
-            send_feishu_msg=lambda text, **kw: self.messages.append((text, kw)),
+            send_im_msg=lambda text, **kw: self.messages.append((text, kw)),
         )
 
     def test_enter_remote_without_history(self):

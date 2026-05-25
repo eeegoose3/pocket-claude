@@ -3,16 +3,43 @@ import unittest
 import app
 
 
+class FakeAdapter:
+    name = "fake"
+
+    def __init__(self):
+        self.messages = []
+        self.files = []
+        self.chats = []
+        self.events = []
+        self.catchups = 0
+
+    def send_message(self, text, ctx, target_chat_id=None, use_card=None):
+        self.messages.append((text, ctx.default_chat_id, target_chat_id, use_card))
+
+    def send_file(self, file_path, ctx, target_chat_id=None):
+        self.files.append((file_path, target_chat_id))
+
+    def create_chat(self, name, ctx):
+        self.chats.append(name)
+        return f"chat_{name}"
+
+    def on_message(self, data, ctx):
+        self.events.append((data, ctx.default_chat_id))
+
+    def catchup_missed_messages(self, ctx):
+        self.catchups += 1
+
+
 class AppRuntimeTests(unittest.TestCase):
     def test_runtime_initializes_state_and_contexts(self):
         rt = app.BridgeRuntime()
         self.assertEqual(rt.chat_session_map, {})
         self.assertEqual(rt.session_jsonl_id, {})
         self.assertEqual(rt.session_backend, {})
-        self.assertIsNone(rt.lark_client)
+        self.assertIsNone(rt.im_client)
 
-        feishu_ctx = rt.build_feishu_context()
-        self.assertIs(feishu_ctx.lark_client, None)
+        feishu_ctx = rt.build_im_context()
+        self.assertIs(feishu_ctx.client, None)
         self.assertIs(feishu_ctx.chat_session_map, rt.chat_session_map)
 
         command_ctx = rt.build_command_context()
@@ -53,6 +80,24 @@ class AppRuntimeTests(unittest.TestCase):
         self.assertEqual(saved[0].chat_session_map, {"chat": "session"})
         self.assertEqual(saved[0].remote_mode, {"session": True})
         self.assertEqual(saved[0].session_runtime, {"session": {"jsonl_offset": 10}})
+
+    def test_runtime_uses_injected_im_adapter(self):
+        adapter = FakeAdapter()
+        rt = app.BridgeRuntime(im_adapter=adapter)
+        rt.reply_chat_id = "default"
+
+        rt.send_im_msg("hello", target_chat_id="chat_1", use_card=False)
+        rt.send_im_file("/tmp/a.txt", target_chat_id="chat_1")
+        chat_id = rt.create_im_chat("work")
+        rt.on_message("event")
+        rt.catchup_missed_messages()
+
+        self.assertEqual(adapter.messages, [("hello", "default", "chat_1", False)])
+        self.assertEqual(adapter.files, [("/tmp/a.txt", "chat_1")])
+        self.assertEqual(adapter.chats, ["work"])
+        self.assertEqual(chat_id, "chat_work")
+        self.assertEqual(adapter.events, [("event", "default")])
+        self.assertEqual(adapter.catchups, 1)
 
 
 if __name__ == "__main__":

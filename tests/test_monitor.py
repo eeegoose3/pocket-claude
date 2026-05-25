@@ -24,8 +24,8 @@ class MonitorTests(unittest.TestCase):
             get_backend=lambda name: "codex",
             save_bindings=lambda: None,
             exit_remote_mode=lambda name, chats, reason="": None,
-            send_feishu_msg=lambda text, **kw: self.messages.append((text, kw)),
-            send_feishu_file=lambda path, **kw: None,
+            send_im_msg=lambda text, **kw: self.messages.append((text, kw)),
+            send_im_file=lambda path, **kw: None,
         )
 
     def test_verify_jsonl_by_screen_matches_recent_assistant_text(self):

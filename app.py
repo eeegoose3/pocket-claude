@@ -15,15 +15,9 @@ load_dotenv()
 
 from backends import CLAUDE_PROJECTS_DIR, CODEX_SESSIONS_DIR
 from commands import CommandContext, handle_command as route_command
-from feishu_adapter import (
-    FeishuContext,
-    catchup_missed_messages as feishu_catchup_missed_messages,
-    create_chat as feishu_create_chat,
-    on_message as feishu_on_message,
-    send_file as feishu_send_file,
-    send_message as feishu_send_message,
-)
+from feishu_adapter import FeishuAdapter
 from history import load_recent_history
+from im_adapter import IMAdapter, IMContext
 from monitor import MonitorContext, jsonl_monitor as run_jsonl_monitor, menu_notified, menu_state
 from remote_mode import (
     RemoteModeContext,
@@ -103,13 +97,14 @@ log = logging.getLogger("bridge")
 class BridgeRuntime:
     """Owns bridge process state and wires modules together."""
 
-    def __init__(self):
+    def __init__(self, im_adapter: IMAdapter | None = None):
         self.chat_session_map = {}
         self.session_jsonl_id = {}
         self.session_backend = {}
         self.session_runtime = {}
         self.session_start_time = {}
-        self.lark_client = None
+        self.im_client = None
+        self.im_adapter = im_adapter or FeishuAdapter()
         self.reply_chat_id = None
         self.seen_message_ids = set()
         self.last_disconnect_time = 0
@@ -163,14 +158,14 @@ class BridgeRuntime:
             session_runtime=self.session_runtime,
         ))
 
-    # ── Feishu IM Adapter wrappers ──────────────────────────────
+    # ── IM Adapter wrappers ──────────────────────────────
 
     def reset_disconnect_time(self):
         self.last_disconnect_time = 0
 
-    def build_feishu_context(self) -> FeishuContext:
-        return FeishuContext(
-            lark_client=self.lark_client,
+    def build_im_context(self) -> IMContext:
+        return IMContext(
+            client=self.im_client,
             default_chat_id=self.reply_chat_id,
             max_msg_len=MAX_MSG_LEN,
             allowed_user_id=ALLOWED_USER_ID,
@@ -184,14 +179,18 @@ class BridgeRuntime:
             reset_disconnect_time=self.reset_disconnect_time,
         )
 
-    def send_feishu_msg(self, text, target_chat_id=None, use_card=None):
-        feishu_send_message(text, self.build_feishu_context(), target_chat_id=target_chat_id, use_card=use_card)
+    def build_feishu_context(self) -> IMContext:
+        """Backward-compatible alias for tests/older integrations."""
+        return self.build_im_context()
 
-    def send_feishu_file(self, file_path, target_chat_id=None):
-        feishu_send_file(file_path, self.build_feishu_context(), target_chat_id=target_chat_id)
+    def send_im_msg(self, text, target_chat_id=None, use_card=None):
+        self.im_adapter.send_message(text, self.build_im_context(), target_chat_id=target_chat_id, use_card=use_card)
 
-    def create_feishu_chat(self, name):
-        return feishu_create_chat(name, self.build_feishu_context())
+    def send_im_file(self, file_path, target_chat_id=None):
+        self.im_adapter.send_file(file_path, self.build_im_context(), target_chat_id=target_chat_id)
+
+    def create_im_chat(self, name):
+        return self.im_adapter.create_chat(name, self.build_im_context())
 
     # ── 远程模式 ──────────────────────────────────────────
 
@@ -202,7 +201,7 @@ class BridgeRuntime:
             backend_display=self.backend_display,
             get_backend=self.get_backend,
             load_recent_history=load_recent_history,
-            send_feishu_msg=self.send_feishu_msg,
+            send_im_msg=self.send_im_msg,
         )
 
     def enter_remote_mode(self, sname, chat_ids):
@@ -237,9 +236,9 @@ class BridgeRuntime:
             get_backend=self.get_backend,
             backend_display=self.backend_display,
             save_bindings=self.save_bindings,
-            send_feishu_msg=self.send_feishu_msg,
-            send_feishu_file=self.send_feishu_file,
-            create_feishu_chat=self.create_feishu_chat,
+            send_im_msg=self.send_im_msg,
+            send_im_file=self.send_im_file,
+            create_im_chat=self.create_im_chat,
             create_tmux_and_run=self.create_tmux_and_run,
             load_recent_history=load_recent_history,
             enter_remote_mode=self.enter_remote_mode,
@@ -271,21 +270,21 @@ class BridgeRuntime:
             get_backend=self.get_backend,
             save_bindings=self.save_bindings,
             exit_remote_mode=self.exit_remote_mode,
-            send_feishu_msg=self.send_feishu_msg,
-            send_feishu_file=self.send_feishu_file,
+            send_im_msg=self.send_im_msg,
+            send_im_file=self.send_im_file,
         )
 
     def jsonl_monitor(self):
         """后台监控 Claude/Codex JSONL；generic backend 降级为屏幕变化推送。"""
         run_jsonl_monitor(self.build_monitor_context())
 
-    # ── Feishu IM Layer: Inbound Message Handling ────────────────────
+    # ── IM Layer: Inbound Message Handling ────────────────────
 
     def on_message(self, data):
-        feishu_on_message(data, self.build_feishu_context())
+        self.im_adapter.on_message(data, self.build_im_context())
 
     def catchup_missed_messages(self):
-        feishu_catchup_missed_messages(self.build_feishu_context())
+        self.im_adapter.catchup_missed_messages(self.build_im_context())
 
     # ── 启动 ──────────────────────────────────────────────
 
@@ -308,7 +307,7 @@ class BridgeRuntime:
         self.load_bindings()
 
         # [IM-LAYER] Initialize Feishu/Lark API client and WebSocket connection.
-        self.lark_client = lark.Client.builder() \
+        self.im_client = lark.Client.builder() \
             .app_id(APP_ID) \
             .app_secret(APP_SECRET) \
             .log_level(lark.LogLevel.INFO) \

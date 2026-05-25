@@ -18,7 +18,7 @@ class RemoteModeContext:
     backend_display: Callable[[str | None], str]
     get_backend: Callable[[str], str]
     load_recent_history: Callable[..., list[dict[str, str]]]
-    send_feishu_msg: Callable[..., None]
+    send_im_msg: Callable[..., None]
 
 
 def enter_remote_mode(sname: str, chat_ids: list[str], ctx: RemoteModeContext) -> None:
@@ -31,22 +31,22 @@ def enter_remote_mode(sname: str, chat_ids: list[str], ctx: RemoteModeContext) -
         history = ctx.load_recent_history(sid, agent=ctx.get_backend(sname))
         if history:
             for cid in chat_ids:
-                ctx.send_feishu_msg("── 📱 进入远程模式，以下是最近对话 ──", target_chat_id=cid, use_card=False)
+                ctx.send_im_msg("── 📱 进入远程模式，以下是最近对话 ──", target_chat_id=cid, use_card=False)
             for msg in history:
                 if msg["role"] == "user":
                     for cid in chat_ids:
-                        ctx.send_feishu_msg(f"👤 你：{msg['text']}", target_chat_id=cid, use_card=False)
+                        ctx.send_im_msg(f"👤 你：{msg['text']}", target_chat_id=cid, use_card=False)
                 else:
                     text = msg["text"]
                     if len(text) > 500:
                         text = text[:500] + "...（已截断）"
                     for cid in chat_ids:
-                        ctx.send_feishu_msg(f"🤖 {display}：{text}", target_chat_id=cid, use_card=True)
+                        ctx.send_im_msg(f"🤖 {display}：{text}", target_chat_id=cid, use_card=True)
             for cid in chat_ids:
-                ctx.send_feishu_msg("── 以上是历史，以下是实时 ──", target_chat_id=cid, use_card=False)
+                ctx.send_im_msg("── 以上是历史，以下是实时 ──", target_chat_id=cid, use_card=False)
             return
     for cid in chat_ids:
-        ctx.send_feishu_msg("📱 已进入远程模式", target_chat_id=cid)
+        ctx.send_im_msg("📱 已进入远程模式", target_chat_id=cid)
 
 
 def exit_remote_mode(sname: str, chat_ids: list[str], ctx: RemoteModeContext, reason: str = "") -> None:
@@ -57,7 +57,7 @@ def exit_remote_mode(sname: str, chat_ids: list[str], ctx: RemoteModeContext, re
     if reason:
         msg += f"（{reason}）"
     for cid in chat_ids:
-        ctx.send_feishu_msg(msg, target_chat_id=cid)
+        ctx.send_im_msg(msg, target_chat_id=cid)
 
 
 def ensure_remote_mode(sname: str, ctx: RemoteModeContext) -> None:

@@ -44,8 +44,8 @@ class MonitorContext:
     get_backend: Callable[[str], str]
     save_bindings: Callable[[], None]
     exit_remote_mode: Callable[[str, list[str], str], None]
-    send_feishu_msg: Callable[..., None]
-    send_feishu_file: Callable[..., None]
+    send_im_msg: Callable[..., None]
+    send_im_file: Callable[..., None]
 
 
 def verify_jsonl_by_screen(session_name, candidate_files, ctx):
@@ -231,7 +231,7 @@ def maybe_push_screen_update(sname, chat_ids, is_remote, ctx):
     if len(text) > 3000:
         text = text[-3000:]
     for cid in chat_ids:
-        ctx.send_feishu_msg(f"📺 {sname} 屏幕更新:\n{text}", target_chat_id=cid, use_card=False)
+        ctx.send_im_msg(f"📺 {sname} 屏幕更新:\n{text}", target_chat_id=cid, use_card=False)
 
 
 def find_continuation_jsonl(current_jsonl_path):
@@ -361,7 +361,7 @@ def jsonl_monitor(ctx):
                             if time.time() - ctx.bridge_sent_time.get(sname, 0) > ctx.bridge_sent_window:
                                 # 本地键盘输入 → 推送内容 + 退出远程模式
                                 for cid in chat_ids:
-                                    ctx.send_feishu_msg(f"👤 本地输入：{user_text}", target_chat_id=cid, use_card=False)
+                                    ctx.send_im_msg(f"👤 本地输入：{user_text}", target_chat_id=cid, use_card=False)
                                 ctx.exit_remote_mode(sname, chat_ids, "检测到本地键盘输入")
                                 is_remote = False
 
@@ -369,7 +369,7 @@ def jsonl_monitor(ctx):
                         text = extract_assistant_text(line, agent)
                         if text and is_remote:
                             for cid in chat_ids:
-                                ctx.send_feishu_msg(text, target_chat_id=cid, use_card=True)
+                                ctx.send_im_msg(text, target_chat_id=cid, use_card=True)
 
                         # ② 交互式 UI 检测（AskUserQuestion / ExitPlanMode / 权限确认）
                         ui = extract_interactive_ui(line, agent)
@@ -390,7 +390,7 @@ def jsonl_monitor(ctx):
                                             msg += "\n"
                                         msg += "\n或直接发文字自定义回复"
                                         for cid in chat_ids:
-                                            ctx.send_feishu_msg(msg, target_chat_id=cid)
+                                            ctx.send_im_msg(msg, target_chat_id=cid)
                                 # 状态追踪始终执行（不管是否远程）
                                 first_q = ui["questions"][0] if ui["questions"] else {}
                                 opts = first_q.get("options", [])
@@ -407,7 +407,7 @@ def jsonl_monitor(ctx):
                                         if len(plan_text) > 2000:
                                             plan_text = plan_text[:2000] + "\n\n...（已截断）"
                                         for cid in chat_ids:
-                                            ctx.send_feishu_msg(f"📋 **Plan 内容：**\n\n{plan_text}", target_chat_id=cid, use_card=True)
+                                            ctx.send_im_msg(f"📋 **Plan 内容：**\n\n{plan_text}", target_chat_id=cid, use_card=True)
                                 plan_notified.add(sname)
                                 log.info(f"[JSONL] 检测到 plan: {sname}, remote={is_remote}")
 
@@ -445,7 +445,7 @@ def jsonl_monitor(ctx):
                                     if img_path and os.path.isfile(img_path):
                                         log.info(f"[图片推送] {sname} → {img_path}")
                                         for cid in chat_ids:
-                                            ctx.send_feishu_file(img_path, target_chat_id=cid)
+                                            ctx.send_im_file(img_path, target_chat_id=cid)
                                 pending_image.pop(sname, None)
 
                         # ④ 系统事件（上下文压缩、API 错误）— 仅远程模式推送
@@ -455,10 +455,10 @@ def jsonl_monitor(ctx):
                                 tokens = evt["pre_tokens"]
                                 if tokens > 0:
                                     for cid in chat_ids:
-                                        ctx.send_feishu_msg(f"🗜️ 上下文已压缩（压缩前 {tokens:,} tokens）", target_chat_id=cid)
+                                        ctx.send_im_msg(f"🗜️ 上下文已压缩（压缩前 {tokens:,} tokens）", target_chat_id=cid)
                             elif evt["type"] == "api_error" and evt["retry_attempt"] >= 3:
                                 for cid in chat_ids:
-                                    ctx.send_feishu_msg(
+                                    ctx.send_im_msg(
                                         f"⚠️ API 错误，第 {evt['retry_attempt']}/{evt['max_retries']} 次重试",
                                         target_chat_id=cid,
                                     )
@@ -468,7 +468,7 @@ def jsonl_monitor(ctx):
                         lines = [l for l in new_content.strip().split("\n") if l.strip()]
                         if lines and is_turn_complete(lines[-1], agent):
                             for cid in chat_ids:
-                                ctx.send_feishu_msg("✅ 已回复完毕，等待指令", target_chat_id=cid)
+                                ctx.send_im_msg("✅ 已回复完毕，等待指令", target_chat_id=cid)
                 else:
                     # 文件无变化，检查是否会话切换（clear context 等）
                     last_change = state.get("last_change", time.time())
@@ -485,7 +485,7 @@ def jsonl_monitor(ctx):
                             log.info(f"会话切换: {sname} → {os.path.basename(new_path)}")
                             if is_remote:
                                 for cid in chat_ids:
-                                    ctx.send_feishu_msg(f"⚠️ 检测到 {sname} 会话已切换（clear context），已自动跟踪新会话", target_chat_id=cid)
+                                    ctx.send_im_msg(f"⚠️ 检测到 {sname} 会话已切换（clear context），已自动跟踪新会话", target_chat_id=cid)
 
                 # ── 权限确认超时检测（仅远程模式推送）──
                 if sname in pending_permission:
@@ -505,7 +505,7 @@ def jsonl_monitor(ctx):
                             else:
                                 hint = f"🔐 等待确认：{sname} 要写入文件\n\n{detail}\n\n发 /y 批准 · /n 拒绝"
                             for cid in chat_ids:
-                                ctx.send_feishu_msg(hint, target_chat_id=cid)
+                                ctx.send_im_msg(hint, target_chat_id=cid)
                         pending_permission.pop(sname)
                         log.info(f"[权限] 确认超时: {sname} {tool_name} {detail[:60]}, remote={is_remote}")
 
@@ -535,7 +535,7 @@ def jsonl_monitor(ctx):
                                     if len(plan_content) > 2000:
                                         plan_content = plan_content[:2000] + "\n\n...（已截断，完整版发 /file " + plan_path + "）"
                                     for cid in chat_ids:
-                                        ctx.send_feishu_msg(f"📋 **Plan 内容：**\n\n{plan_content}", target_chat_id=cid, use_card=True)
+                                        ctx.send_im_msg(f"📋 **Plan 内容：**\n\n{plan_content}", target_chat_id=cid, use_card=True)
                                 except Exception as e:
                                     log.error(f"读取 plan 文件失败: {e}")
                         plan_notified.add(sname)
@@ -556,7 +556,7 @@ def jsonl_monitor(ctx):
                                     msg += f"{o['num']}. {o['text']}\n"
                                 msg += "\n或直接发文字自定义回复"
                                 for cid in chat_ids:
-                                    ctx.send_feishu_msg(msg, target_chat_id=cid)
+                                    ctx.send_im_msg(msg, target_chat_id=cid)
                             menu_notified.add(sname)
                             menu_state[sname] = options
                             log.info(f"[Screen] 检测到选择菜单: {sname}, {len(options)} 个选项, remote={is_remote}")

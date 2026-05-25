@@ -66,6 +66,15 @@ from backends import (
     resume_command,
     start_command,
 )
+from tmux import (
+    capture_pane,
+    list_sessions,
+    send_confirm,
+    send_ctrl_c,
+    send_keys as tmux_send_keys,
+    session_exists,
+    tmux_run,
+)
 from security import (
     ALLOW_ALL_USERS,
     SKIP_SSL_VERIFY,
@@ -267,52 +276,10 @@ def save_bindings():
 
 # ── tmux 操作 ──────────────────────────────────────────
 
-def tmux_run(args: list[str]) -> tuple[bool, str]:
-    """执行 tmux 命令，返回 (成功, 输出)"""
-    try:
-        result = subprocess.run(
-            ["tmux"] + args,
-            capture_output=True, text=True, timeout=5,
-        )
-        return result.returncode == 0, result.stdout.strip()
-    except Exception as e:
-        return False, str(e)
-
-
-def list_sessions() -> list[str]:
-    ok, out = tmux_run(["list-sessions", "-F", "#{session_name}"])
-    if not ok or not out:
-        return []
-    return out.strip().split("\n")
-
-
-def session_exists(name: str) -> bool:
-    return name in list_sessions()
-
-
 def send_keys(session: str, text: str):
-    """向 tmux session 发送按键。分两步：先发文本，再发回车，避免 tmux 拼接问题"""
+    """向 tmux session 发送按键并记录 bridge 最近发送时间。"""
     bridge_sent_time[session] = time.time()
-    tmux_run(["send-keys", "-t", session, "--", text])
-    tmux_run(["send-keys", "-t", session, "Enter"])
-
-
-def send_ctrl_c(session: str):
-    tmux_run(["send-keys", "-t", session, "C-c", ""])
-
-
-def send_confirm(session: str, answer: str):
-    """发送 y/n 确认（不加 Enter，Claude Code 有时只需要单字符）"""
-    tmux_run(["send-keys", "-t", session, answer, ""])
-
-
-def capture_pane(session: str, lines: int = CAPTURE_LINES) -> str:
-    """截取 tmux session 屏幕内容"""
-    ok, out = tmux_run([
-        "capture-pane", "-t", session, "-p",
-        "-S", f"-{lines}",
-    ])
-    return out if ok else ""
+    tmux_send_keys(session, text)
 
 
 # ── ANSI 清理 ──────────────────────────────────────────

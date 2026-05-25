@@ -169,10 +169,12 @@ When Claude Code or Codex needs permission to run a command or edit a file, you'
 | `bridge.py` | Runtime bridge: Feishu, tmux, command routing, monitors |
 | `backends.py` | Claude/Codex/generic backend helpers: commands, log discovery, cwd lookup |
 | `security.py` | Security configuration and validation helpers |
+| `tmux.py` | tmux command helpers |
 | `parsers.py` | Pure Claude/Codex JSONL parser functions |
 | `tests/test_parsers.py` | Minimal parser compatibility tests |
 | `tests/test_backends.py` | Minimal backend helper tests |
 | `tests/test_security.py` | Minimal security helper tests |
+| `tests/test_tmux.py` | Minimal tmux helper tests |
 | `TESTING.md` | Automated and manual smoke-test notes |
 | `.env` | Feishu credentials (not committed) |
 | `bindings.json` | Chat ↔ session mappings (auto-generated, not committed) |
@@ -207,7 +209,7 @@ See `TESTING.md` for automated checks and manual smoke-test notes.
 
 
 ```bash
-python3 -m py_compile bridge.py backends.py parsers.py security.py
+python3 -m py_compile bridge.py backends.py parsers.py security.py tmux.py
 python3 -m unittest discover -v
 ```
 

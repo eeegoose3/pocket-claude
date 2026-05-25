@@ -37,7 +37,6 @@ Requires: .env with APP_ID, APP_SECRET, ALLOWED_USER_ID (see .env.example)
 from __future__ import annotations
 
 import atexit
-import json
 import logging
 import os
 import re
@@ -59,8 +58,15 @@ from backends import (
     infer_backend_from_command,
     normalize_agent as normalize_agent_value,
 )
-from formatting import convert_tables_in_text, has_markdown
 from commands import CommandContext, handle_command as route_command
+from feishu_adapter import (
+    FeishuContext,
+    catchup_missed_messages as feishu_catchup_missed_messages,
+    create_chat as feishu_create_chat,
+    on_message as feishu_on_message,
+    send_file as feishu_send_file,
+    send_message as feishu_send_message,
+)
 from monitor import MonitorContext, jsonl_monitor as run_jsonl_monitor, menu_notified, menu_state
 from state import BridgeState, load_state, save_state
 from tmux import (
@@ -71,7 +77,6 @@ from tmux import (
 from security import (
     ALLOW_ALL_USERS,
     SKIP_SSL_VERIFY,
-    whitelist_allows_sender,
 )
 from parsers import (
     extract_assistant_text,
@@ -110,13 +115,6 @@ _websockets.connect = _patched_ws_connect
 # To adapt to another IM platform (Slack, Telegram, Discord, etc.),
 # replace this import block and the IM Layer functions listed in the module docstring.
 import lark_oapi as lark
-from lark_oapi.api.im.v1 import (
-    CreateMessageRequest, CreateMessageRequestBody,   # Send text/card messages
-    CreateChatRequest, CreateChatRequestBody,          # Create group chats
-    CreateImageRequest, CreateImageRequestBody,        # Upload images
-    CreateFileRequest, CreateFileRequestBody,          # Upload files
-    ListMessageRequest,                                # Pull message history (for reconnect recovery)
-)
 
 # ── 配置 ──────────────────────────────────────────────
 
@@ -234,165 +232,36 @@ def send_keys(session: str, text: str):
     tmux_send_keys(session, text)
 
 
-# ── Feishu IM Layer: Message Sending ──────────────────────────────
-# [IM-LAYER] Replace send_feishu_msg() and send_feishu_file() to adapt to other platforms.
-# Key behaviors to preserve:
-#   - Long message splitting (MAX_MSG_LEN)
-#   - Markdown table → vertical list conversion for mobile readability
-#   - Image upload as inline preview (not file attachment)
+# ── Feishu IM Adapter wrappers ──────────────────────────────
+
+def reset_disconnect_time():
+    global last_disconnect_time
+    last_disconnect_time = 0
+
+
+def build_feishu_context() -> FeishuContext:
+    return FeishuContext(
+        lark_client=lark_client,
+        default_chat_id=_reply_chat_id,
+        max_msg_len=MAX_MSG_LEN,
+        allowed_user_id=ALLOWED_USER_ID,
+        allow_all_users=ALLOW_ALL_USERS,
+        seen_message_ids=seen_message_ids,
+        chat_session_map=chat_session_map,
+        remote_mode=remote_mode,
+        last_disconnect_time=last_disconnect_time,
+        last_connect_time=last_connect_time,
+        handle_command=handle_command,
+        reset_disconnect_time=reset_disconnect_time,
+    )
+
 
 def send_feishu_msg(text, target_chat_id=None, use_card=None):
-    """[IM-LAYER] Send a text or card message to Feishu.
-
-    This is the primary outbound messaging function. All push notifications,
-    command responses, and forwarded Claude output go through here.
-
-    Args:
-        text: Message content (plain text or markdown)
-        target_chat_id: Feishu chat ID to send to (defaults to current command's chat)
-        use_card: True=force card (markdown), None=auto-detect, False=force plain text
-    """
-    cid = target_chat_id or _reply_chat_id
-    if not cid or not lark_client:
-        log.warning("chat_id 或 lark_client 未初始化，无法发送消息")
-        return
-
-    # 自动检测是否需要卡片
-    if use_card is None:
-        use_card = has_markdown(text)
-
-    # 分条发送超长消息
-    chunks = []
-    while len(text) > MAX_MSG_LEN:
-        split_pos = text.rfind("\n", 0, MAX_MSG_LEN)
-        if split_pos == -1:
-            split_pos = MAX_MSG_LEN
-        chunks.append(text[:split_pos])
-        text = text[split_pos:].lstrip("\n")
-    if text:
-        chunks.append(text)
-
-    for chunk in chunks:
-        if use_card:
-            msg_type = "interactive"
-            # 把 markdown 表格转成纵向列表，适合手机阅读
-            chunk = convert_tables_in_text(chunk)
-            content = json.dumps({
-                "config": {"wide_screen_mode": True},
-                "elements": [{"tag": "markdown", "content": chunk}],
-            })
-        else:
-            msg_type = "text"
-            content = json.dumps({"text": chunk})
-
-        body = CreateMessageRequestBody.builder() \
-            .msg_type(msg_type) \
-            .receive_id(cid) \
-            .content(content) \
-            .build()
-        req = CreateMessageRequest.builder() \
-            .receive_id_type("chat_id") \
-            .request_body(body) \
-            .build()
-        try:
-            resp = lark_client.im.v1.message.create(req)
-            if not resp.success():
-                log.error(f"发送消息失败: {resp.code} {resp.msg}")
-        except Exception as e:
-            log.error(f"发送消息异常: {e}")
-
-
-# 图片扩展名集合
-IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff"}
-
-# 飞书文件类型映射
-FILE_TYPE_MAP = {
-    ".pdf": "pdf", ".mp4": "mp4", ".mp3": "mp3",
-    ".docx": "docx", ".xlsx": "xlsx", ".pptx": "pptx",
-    ".doc": "doc",
-}
+    feishu_send_message(text, build_feishu_context(), target_chat_id=target_chat_id, use_card=use_card)
 
 
 def send_feishu_file(file_path, target_chat_id=None):
-    """[IM-LAYER] Upload a local file and send it to Feishu.
-
-    Images (.png, .jpg, etc.) are uploaded as inline images (directly visible in chat).
-    Other files are uploaded as downloadable attachments.
-    Used by: /file command, image auto-push in remote mode.
-    """
-    cid = target_chat_id or _reply_chat_id
-    if not cid or not lark_client:
-        log.warning("chat_id 或 lark_client 未初始化，无法发送文件")
-        return
-
-    file_path = os.path.expanduser(file_path)
-    if not os.path.isfile(file_path):
-        send_feishu_msg(f"文件不存在: {file_path}", target_chat_id=cid)
-        return
-
-    ext = os.path.splitext(file_path)[1].lower()
-    file_name = os.path.basename(file_path)
-
-    try:
-        if ext in IMAGE_EXTS:
-            # 图片：上传后用 image 消息发送（手机可直接预览）
-            with open(file_path, "rb") as f:
-                body = CreateImageRequestBody.builder() \
-                    .image_type("message") \
-                    .image(f) \
-                    .build()
-                req = CreateImageRequest.builder() \
-                    .request_body(body) \
-                    .build()
-                resp = lark_client.im.v1.image.create(req)
-
-            if not resp.success():
-                send_feishu_msg(f"图片上传失败: {resp.code} {resp.msg}", target_chat_id=cid)
-                return
-
-            content = json.dumps({"image_key": resp.data.image_key})
-            msg_body = CreateMessageRequestBody.builder() \
-                .msg_type("image") \
-                .receive_id(cid) \
-                .content(content) \
-                .build()
-        else:
-            # 其他文件：上传后用 file 消息发送（手机可下载）
-            file_type = FILE_TYPE_MAP.get(ext, "stream")
-            with open(file_path, "rb") as f:
-                body = CreateFileRequestBody.builder() \
-                    .file_type(file_type) \
-                    .file_name(file_name) \
-                    .file(f) \
-                    .build()
-                req = CreateFileRequest.builder() \
-                    .request_body(body) \
-                    .build()
-                resp = lark_client.im.v1.file.create(req)
-
-            if not resp.success():
-                send_feishu_msg(f"文件上传失败: {resp.code} {resp.msg}", target_chat_id=cid)
-                return
-
-            content = json.dumps({"file_key": resp.data.file_key})
-            msg_body = CreateMessageRequestBody.builder() \
-                .msg_type("file") \
-                .receive_id(cid) \
-                .content(content) \
-                .build()
-
-        msg_req = CreateMessageRequest.builder() \
-            .receive_id_type("chat_id") \
-            .request_body(msg_body) \
-            .build()
-        msg_resp = lark_client.im.v1.message.create(msg_req)
-        if msg_resp.success():
-            send_feishu_msg(f"✅ {file_name}", target_chat_id=cid)
-        else:
-            log.error(f"发送文件消息失败: {msg_resp.code} {msg_resp.msg}")
-    except Exception as e:
-        log.error(f"文件发送异常: {e}")
-        send_feishu_msg(f"文件发送失败: {e}", target_chat_id=cid)
+    feishu_send_file(file_path, build_feishu_context(), target_chat_id=target_chat_id)
 
 
 # ── tmux session 创建 ────────────────────────────────────────
@@ -414,34 +283,7 @@ def create_tmux_and_run(session_name, command):
 # ── Feishu IM Layer: Chat Management ─────────────────────────────
 
 def create_feishu_chat(name):
-    """[IM-LAYER] Create a new Feishu group chat and add the user to it.
-
-    Each tmux session gets its own group chat for isolated communication.
-    The bot is set as chat manager so it can send messages without being @mentioned.
-    Returns the new chat_id, or None on failure.
-    """
-    if not lark_client or not ALLOWED_USER_ID:
-        return None
-    body = CreateChatRequestBody.builder() \
-        .name(name) \
-        .user_id_list([ALLOWED_USER_ID]) \
-        .build()
-    req = CreateChatRequest.builder() \
-        .user_id_type("open_id") \
-        .set_bot_manager(True) \
-        .request_body(body) \
-        .build()
-    try:
-        resp = lark_client.im.v1.chat.create(req)
-        if resp.success():
-            log.info(f"创建群聊成功: {name} -> {resp.data.chat_id}")
-            return resp.data.chat_id
-        else:
-            log.error(f"创建群聊失败: {resp.code} {resp.msg}")
-            return None
-    except Exception as e:
-        log.error(f"创建群聊异常: {e}")
-        return None
+    return feishu_create_chat(name, build_feishu_context())
 
 
 # ── 远程模式 ──────────────────────────────────────────
@@ -633,134 +475,11 @@ def jsonl_monitor():
 # ── Feishu IM Layer: Inbound Message Handling ────────────────────
 
 def on_message(data):
-    """[IM-LAYER] Handle incoming Feishu message events (via WebSocket).
+    feishu_on_message(data, build_feishu_context())
 
-    This is the entry point for all user messages from Feishu.
-    Validates sender against ALLOWED_USER_ID whitelist, deduplicates messages,
-    then delegates to handle_command() for routing.
-    """
-    event = data.event
-    if not event or not event.message:
-        return
-
-    msg = event.message
-    sender = event.sender
-
-    # 只处理白名单用户；除非显式 ALLOW_ALL_USERS=true
-    sender_open_id = None
-    if sender and sender.sender_id:
-        sender_open_id = sender.sender_id.open_id
-    if not whitelist_allows_sender(ALLOWED_USER_ID, sender_open_id, ALLOW_ALL_USERS):
-        log.warning(f"非白名单或未配置白名单用户消息，忽略: {sender_open_id}")
-        return
-
-    # 只处理文本消息
-    if msg.message_type != "text":
-        return
-
-    # 去重：同一条消息不处理两次
-    msg_id = msg.message_id
-    if msg_id in seen_message_ids:
-        log.info(f"重复消息，忽略: {msg_id}")
-        return
-    seen_message_ids.add(msg_id)
-    # 防止 set 无限增长，只保留最近 200 条
-    if len(seen_message_ids) > 200:
-        seen_message_ids.clear()
-
-    # 解析消息内容
-    try:
-        content = json.loads(msg.content)
-        text = content.get("text", "").strip()
-    except (json.JSONDecodeError, AttributeError):
-        return
-
-    if not text:
-        return
-
-    log.info(f"收到消息: {text} (chat: {msg.chat_id})")
-    handle_command(text, msg.chat_id)
-
-
-# ── Feishu IM Layer: Reconnect Message Recovery ──────────────────
 
 def catchup_missed_messages():
-    """[IM-LAYER] Pull missed messages via Feishu REST API after WebSocket reconnect.
-
-    When the WebSocket connection drops and recovers, any messages sent during
-    the gap are lost. This function uses the ListMessage API to fetch messages
-    between last_disconnect_time and last_connect_time, then replays them
-    through handle_command(). Also notifies remote-mode sessions about the gap.
-    """
-    global last_disconnect_time
-    if not last_disconnect_time or not lark_client:
-        return
-
-    gap_seconds = last_connect_time - last_disconnect_time
-    if gap_seconds < 5:
-        # 断连不到 5 秒，消息丢失概率很低，跳过
-        return
-
-    log.info(f"检测到断连 {gap_seconds:.0f} 秒，开始补拉消息...")
-
-    # 遍历所有已绑定的群聊
-    total_recovered = 0
-    for chat_id, session_name in chat_session_map.items():
-        try:
-            request = ListMessageRequest.builder() \
-                .container_id_type("chat") \
-                .container_id(chat_id) \
-                .start_time(str(int(last_disconnect_time))) \
-                .end_time(str(int(last_connect_time))) \
-                .sort_type("ByCreateTimeAsc") \
-                .page_size(50) \
-                .build()
-
-            response = lark_client.im.v1.message.list(request)
-            if not response.success():
-                log.warning(f"补拉 {session_name} 消息失败: {response.msg}")
-                continue
-
-            items = response.data.items if response.data and response.data.items else []
-            recovered = 0
-            for item in items:
-                msg_id = item.message_id
-                if msg_id in seen_message_ids:
-                    continue
-                # 只处理用户发的文本消息（跳过 bot 自己发的）
-                if not item.sender or item.sender.sender_type != "user":
-                    continue
-                if item.message_type != "text":
-                    continue
-                try:
-                    content = json.loads(item.body.content)
-                    text = content.get("text", "").strip()
-                except (json.JSONDecodeError, AttributeError, TypeError):
-                    continue
-                if not text:
-                    continue
-
-                seen_message_ids.add(msg_id)
-                recovered += 1
-                log.info(f"补拉到消息: {text} (chat: {chat_id})")
-                handle_command(text, chat_id)
-
-            if recovered > 0:
-                log.info(f"从 {session_name} 补拉了 {recovered} 条消息")
-            total_recovered += recovered
-
-        except Exception as e:
-            log.error(f"补拉 {session_name} 消息异常: {e}")
-
-    # 通知远程模式的群聊
-    for chat_id, sname in chat_session_map.items():
-        if remote_mode.get(sname, False):
-            msg = f"⚡ WebSocket 断连 {gap_seconds:.0f} 秒，已重连"
-            if total_recovered > 0:
-                msg += f"，补拉了 {total_recovered} 条消息"
-            send_feishu_msg(msg, target_chat_id=chat_id)
-
-    last_disconnect_time = 0  # 补拉完毕，重置
+    feishu_catchup_missed_messages(build_feishu_context())
 
 
 # ── 启动 ──────────────────────────────────────────────

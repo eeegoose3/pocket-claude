@@ -263,6 +263,7 @@ class BridgeRuntime:
             bridge_sent_window=BRIDGE_SENT_WINDOW,
             chat_session_map=self.chat_session_map,
             session_jsonl_id=self.session_jsonl_id,
+            session_backend=self.session_backend,
             session_runtime=self.session_runtime,
             session_start_time=self.session_start_time,
             remote_mode=remote_mode,

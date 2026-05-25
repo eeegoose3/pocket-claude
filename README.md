@@ -58,7 +58,7 @@ The bridge is organized around a small runtime object plus focused helper module
 | Runtime wiring | `app.py` / `BridgeRuntime` | Owns process state, builds contexts, injects the IM adapter, starts Feishu WebSocket and monitor thread |
 | IM contract | `im_adapter.py` | Provider-neutral `IMAdapter` / `IMContext` interface used by the bridge core |
 | Feishu adapter | `feishu_adapter.py` | Feishu/Lark messages, files, chats, inbound events, reconnect catch-up |
-| Command routing | `commands.py` | `/start`, `/resume`, `/screen`, approvals, text forwarding |
+| Command routing | `commands.py` | `/start`, `/sessions`, `/bind`, `/screen`, approvals, text forwarding |
 | Monitoring | `monitor.py` | JSONL tailing, screen fallback, permission/image/menu/plan detection |
 | Session runtime | `session_runtime.py`, `tmux.py` | backend inference, tmux creation, send-keys, caffeinate |
 | Backend logic | `backends.py`, `parsers.py`, `history.py` | Claude/Codex log discovery, JSONL parsing, recent history |
@@ -70,7 +70,7 @@ The bridge is organized around a small runtime object plus focused helper module
 |-------|--------|---------|
 | Claude JSONL | `~/.claude/projects/**/*.jsonl` | AskUserQuestion, ExitPlanMode, tool_use permissions, system events, turn completion |
 | Codex JSONL | `~/.codex/sessions/**/*.jsonl` | user/assistant messages, task completion, escalated command prompts |
-| Screen | tmux capture-pane | Fallback for menus, plan prompts, generic CLI output |
+| Screen | tmux capture-pane | Fallback for menus, plan prompts, generic CLI output, current input target classification |
 
 **Remote mode state machine:**
 - **Local mode** (default): bridge monitors silently, no push notifications
@@ -147,13 +147,15 @@ From the terminal, run `venv/bin/pocket-claude doctor` for the same local check.
 |---------|-------------|
 | `/help` | Show all commands |
 | `/doctor` | Check security config and local CLI dependencies |
-| `/list` | List all tmux sessions |
-| `/status` | Global status overview (backend, mode, log binding, WebSocket, caffeinate) |
+| `/status` | Show current Feishu chat → tmux binding, tmux online/missing state, and likely input target |
+| `/sessions` | List running tmux sessions with numbered entries and likely input target (`/list` is an alias) |
+| `/bind <name-or-number> [claude|codex|generic]` | Bind the current Feishu chat to a running tmux session |
 | `/new <name> [claude|codex|generic]` | Create a Feishu chat for an existing tmux session |
-| `/start [claude|codex] <name> <dir>` | Create tmux session + start selected CLI + create Feishu chat |
-| `/resume [claude|codex] <name> <session-id>` | Resume a Claude/Codex conversation in a new tmux session |
+| `/start [claude|codex] <name> <dir>` | Create a new tmux session + start selected CLI + create Feishu chat |
+| `/resume [claude|codex] <name> <session-id>` | Advanced compatibility command: create a new tmux session and run the agent's own resume command |
 | `/caffeinate` | Toggle macOS sleep prevention |
 
+`/start` and `/resume` do not inject commands into an existing tmux session. If the target tmux session already exists, bind to it with `/bind` or choose a new session name.
 
 ### Backend selection examples
 
@@ -164,12 +166,13 @@ From the terminal, run `venv/bin/pocket-claude doctor` for the same local check.
 # Start Codex
 /start codex marketing ~/Claude_code/marketing
 
-# Resume a Codex session
-/resume codex marketing 019e5e21-b1a3-75c2-8521-5391b4ff644b
-
-# Bind an already-running tmux session and force backend
-/new marketing codex
+# List and bind already-running tmux sessions
+/sessions
+/bind 1
 /bind marketing generic
+
+# Advanced: create a new tmux session and run Codex resume inside it
+/resume codex marketing-restored 019e5e21-b1a3-75c2-8521-5391b4ff644b
 ```
 
 Set `DEFAULT_AGENT=codex` in `.env` if you primarily use Codex.
@@ -178,15 +181,27 @@ Set `DEFAULT_AGENT=codex` in `.env` if you primarily use Codex.
 
 | Command | Description |
 |---------|-------------|
-| `/screen` | Capture current screen (last 50 lines) |
+| `/screen` | Capture current tmux screen (last 50 lines) and show likely input target |
 | `/file <path>` | Send a local file to Feishu; requires `FILE_ALLOW_DIRS` |
 | `/y [token]` | Approve (send `y` to the CLI); token required if `APPROVAL_TOKEN` is set |
 | `/n [token]` | Reject (send `n` to the CLI); token required if `APPROVAL_TOKEN` is set |
 | `/cancel` | Send Ctrl+C |
 | `/remote` | Manually enter remote mode |
 | `/local` | Manually exit remote mode |
-| `/unbind` | Unbind this chat from its session |
-| *(any text)* | Send directly to the bound CLI session |
+| `/unbind` | Unbind this Feishu chat from its tmux session |
+| *(any text)* | Type into the bound tmux session; if the screen looks like shell and the text is natural language, the bridge asks you to start Codex/Claude first |
+
+### tmux session model
+
+The stable routing model is:
+
+```
+Feishu chat → tmux session → whatever CLI is currently running there
+```
+
+Feishu chats bind to tmux sessions. Codex/Claude JSONL IDs are only recent agent history used by monitoring; they are not the main identity of a remote session. If a bound tmux session no longer exists, the bridge keeps the binding record and explains how to re-bind or recreate instead of silently unbinding.
+
+`/screen`, `/status`, and `/sessions` classify the visible prompt to show the likely input target: Codex, Claude Code, Shell, menu, or unknown. This is based on the current tmux screen rather than process-name guesses.
 
 ### Selection menus
 
@@ -207,8 +222,9 @@ When Claude Code or Codex needs permission to run a command or edit a file, you'
 | `app.py` | BridgeRuntime application state, context wiring, and lifecycle startup |
 | `im_adapter.py` | Provider-neutral IM adapter protocol and runtime context |
 | `feishu_adapter.py` | Feishu/Lark implementation of the IM adapter contract |
-| `commands.py` | Command routing for `/start`, `/resume`, `/screen`, approvals, and text forwarding |
+| `commands.py` | Command routing for tmux binding/start/screen/status, approvals, and text forwarding |
 | `monitor.py` | Background JSONL/screen monitor, permission/image/menu detection |
+| `screen_classifier.py` | Visible prompt classifier for Codex/Claude/Shell/menu input target |
 | `remote_mode.py` | Remote/local mode state and history-context notifications |
 | `history.py` | Recent conversation history loader from agent JSONL logs |
 | `session_runtime.py` | tmux session runtime helpers, backend inference, and caffeinate |
@@ -230,6 +246,7 @@ When Claude Code or Codex needs permission to run a command or edit a file, you'
 | `tests/test_history.py` | Minimal conversation history tests |
 | `tests/test_monitor.py` | Minimal monitor helper tests |
 | `tests/test_remote_mode.py` | Minimal remote-mode tests |
+| `tests/test_screen_classifier.py` | Minimal screen input target classifier tests |
 | `tests/test_security.py` | Minimal security helper tests |
 | `tests/test_session_runtime.py` | Minimal session runtime tests |
 | `tests/test_tmux.py` | Minimal tmux helper tests |
@@ -270,7 +287,7 @@ See `TESTING.md` for automated checks and manual smoke-test notes.
 
 
 ```bash
-python3 -m py_compile bridge.py app.py cli.py backends.py parsers.py security.py tmux.py state.py formatting.py commands.py monitor.py im_adapter.py feishu_adapter.py remote_mode.py history.py session_runtime.py
+python3 -m py_compile bridge.py app.py cli.py backends.py parsers.py security.py tmux.py state.py formatting.py commands.py monitor.py screen_classifier.py im_adapter.py feishu_adapter.py remote_mode.py history.py session_runtime.py
 python3 -m unittest discover -v
 venv/bin/pocket-claude version
 venv/bin/pocket-claude doctor

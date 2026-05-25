@@ -14,6 +14,7 @@ import time
 from backends import find_log_by_session_id, jsonl_candidates_for_agent
 from commands import parse_menu_options
 from formatting import clean_ansi
+from screen_classifier import classify_screen_input
 from parsers import (
     check_tool_result,
     extract_assistant_text,
@@ -37,6 +38,7 @@ class MonitorContext:
     bridge_sent_window: float
     chat_session_map: dict[str, str]
     session_jsonl_id: dict[str, str]
+    session_backend: dict[str, str]
     session_runtime: dict[str, dict[str, Any]]
     session_start_time: dict[str, float]
     remote_mode: dict[str, bool]
@@ -48,64 +50,136 @@ class MonitorContext:
     send_im_file: Callable[..., None]
 
 
-def verify_jsonl_by_screen(session_name, candidate_files, ctx):
-    """通过 tmux 屏幕内容验证哪个 JSONL 文件属于这个 session。
-    从每个候选 JSONL 的尾部提取最近的 assistant 文本片段，
-    与 tmux 屏幕上显示的内容做交叉比对。
+def _match_text(text: str) -> str:
+    """Normalize text for screen-vs-JSONL ownership matching."""
+    text = clean_ansi(text or "").lower()
+    # Strip markdown, bullets, box drawing, prompts, and whitespace. Keep CJK,
+    # letters, digits, and path punctuation that helps distinguish sessions.
+    text = re.sub(r"[`*_#>›•│╭╮╰╯─\s]+", "", text)
+    text = re.sub(r"[，。！？、：:;,.!?\[\](){}<>\"\']+", "", text)
+    return text
+
+
+def _jsonl_recent_snippets(fpath: str, agent: str) -> list[tuple[str, str]]:
+    """Return recent user/assistant snippets from a JSONL file."""
+    from collections import deque
+
+    snippets: list[tuple[str, str]] = []
+    with open(fpath, "r") as f:
+        tail_lines = deque(f, maxlen=160)
+
+    for line in tail_lines:
+        user_text = extract_user_text(line, agent)
+        if user_text:
+            snippets.append(("user", user_text))
+        assistant_text = extract_assistant_text(line, agent)
+        if assistant_text:
+            snippets.append(("assistant", assistant_text))
+    return snippets[-12:]
+
+
+def _score_jsonl_against_screen(fpath: str, agent: str, screen_text: str) -> tuple[int, int, set[str]]:
+    """Score how strongly one JSONL matches the visible tmux screen.
+
+    Returns (score, longest_match_len, matched_roles). Short generic snippets
+    such as OK are intentionally weak and cannot lock ownership alone.
     """
-    # 获取屏幕内容
+    screen_norm = _match_text(screen_text)
+    if not screen_norm:
+        return 0, 0, set()
+
+    score = 0
+    longest = 0
+    roles: set[str] = set()
+    seen = set()
+    for role, snippet in _jsonl_recent_snippets(fpath, agent):
+        norm = _match_text(snippet)
+        if len(norm) < 4 or norm in seen:
+            continue
+        seen.add(norm)
+        if norm in screen_norm:
+            longest = max(longest, len(norm))
+            roles.add(role)
+            if len(norm) >= 20:
+                score += 4
+            elif len(norm) >= 12:
+                score += 3
+            elif len(norm) >= 8:
+                score += 2
+            else:
+                score += 1
+    # A visible user+assistant pair is stronger than a single line.
+    if len(roles) >= 2:
+        score += 2
+    return score, longest, roles
+
+
+def verify_jsonl_by_screen(session_name, candidate_files, ctx):
+    """Verify which JSONL belongs to a tmux session by visible content only.
+
+    Ownership is locked only when recent user/assistant text in the JSONL can
+    be found on the current tmux screen. We intentionally do not fall back to
+    latest mtime: multiple Codex sessions may share the same cwd, and mtime
+    fallback can wire one tmux session to another conversation.
+    """
     ok, screen = tmux_run(["capture-pane", "-t", session_name, "-p"])
-    if not ok or not screen or len(screen.strip()) < 20:
+    if not ok or not screen or len(screen.strip()) < 10:
         return None
 
-    screen_text = screen.strip()
     agent = ctx.get_backend(session_name)
-    matched = []
-
+    ranked = []
     for fpath in candidate_files:
         try:
-            # 从文件尾部读取最后 100 行，提取 assistant 文本指纹
-            with open(fpath, "r") as f:
-                # 用 deque 高效读尾部
-                from collections import deque
-                tail_lines = deque(f, maxlen=100)
-
-            fingerprints = []
-            for line in tail_lines:
-                text = extract_assistant_text(line, agent)
-                if text:
-                    # 取前 80 个字符作为指纹（去掉 markdown 符号和空白）
-                    clean = re.sub(r"[#*`_\-|>\s]+", " ", text).strip()
-                    if len(clean) >= 15:
-                        fingerprints.append(clean[:80])
-
-            if not fingerprints:
-                continue
-
-            # 检查最近 3 条指纹是否有任一出现在屏幕中
-            for fp in fingerprints[-3:]:
-                # 指纹也做同样的清理
-                screen_clean = re.sub(r"[#*`_\-|>\s]+", " ", screen_text)
-                if fp in screen_clean:
-                    matched.append(fpath)
-                    break
+            score, longest, roles = _score_jsonl_against_screen(fpath, agent, screen)
+            if score:
+                ranked.append((score, longest, len(roles), fpath))
         except Exception as e:
             log.debug(f"验证 JSONL 屏幕匹配失败 {fpath}: {e}")
-            continue
 
-    if len(matched) == 1:
-        log.info(f"屏幕验证命中: {session_name} → {os.path.basename(matched[0])}")
-        return matched[0]
+    if not ranked:
+        log.debug("屏幕内容未匹配任何 JSONL，不锁定")
+        return None
 
-    if len(matched) > 1:
-        log.warning(f"屏幕验证多个命中 ({len(matched)})，回退到时间排序")
-    else:
-        log.debug(f"屏幕验证无命中，回退到时间排序")
+    ranked.sort(reverse=True)
+    best_score, best_longest, best_roles, best_path = ranked[0]
+    second_score = ranked[1][0] if len(ranked) > 1 else 0
+
+    # Require a strong, unique content match. Examples that pass:
+    # - one long assistant/user line (>=12 normalized chars)
+    # - or multiple shorter user+assistant lines.
+    strong_enough = best_score >= 4 and (best_longest >= 12 or best_roles >= 2)
+    unique_enough = best_score > second_score
+    if strong_enough and unique_enough:
+        log.info(
+            f"屏幕内容锁定 JSONL: {session_name} → {os.path.basename(best_path)} "
+            f"(score={best_score}, longest={best_longest})"
+        )
+        return best_path
+
+    log.warning(
+        f"屏幕内容匹配不唯一或不够强，不锁定 JSONL: "
+        f"best={best_score}, second={second_score}, longest={best_longest}"
+    )
     return None
 
 
 
 
+def clear_jsonl_binding(session_name, ctx, reason: str = ""):
+    """Clear persisted JSONL ownership for a tmux session."""
+    ctx.session_jsonl_id.pop(session_name, None)
+    runtime = ctx.session_runtime.get(session_name, {})
+    runtime.pop("jsonl_path", None)
+    runtime.pop("jsonl_offset", None)
+    runtime.pop("last_message_id", None)
+    if runtime:
+        ctx.session_runtime[session_name] = runtime
+    else:
+        ctx.session_runtime.pop(session_name, None)
+    jsonl_state.pop(session_name, None)
+    ctx.save_bindings()
+    if reason:
+        log.warning(f"已清除 JSONL 绑定: {session_name} ({reason})")
 
 
 def find_jsonl_for_session(session_name, ctx):
@@ -119,12 +193,16 @@ def find_jsonl_for_session(session_name, ctx):
     if agent == "generic":
         return None
 
-    # 优先用已知的 session_id 精确匹配（/resume 时记录的）
+    # 已知 session_id 也必须过当前屏幕内容校验。历史错误锁定会被清掉，
+    # 避免一个 tmux session 串到另一个 Codex/Claude 对话。
     known_id = ctx.session_jsonl_id.get(session_name)
     if known_id:
         match = find_log_by_session_id(known_id, agent)
         if match and os.path.exists(match):
-            return match
+            verified = verify_jsonl_by_screen(session_name, [match], ctx)
+            if verified:
+                return verified
+        clear_jsonl_binding(session_name, ctx, f"未通过屏幕校验: {known_id}")
 
     # 获取 session 的工作目录
     ok, cwd = tmux_run(["display-message", "-t", session_name, "-p", "#{pane_current_path}"])
@@ -135,23 +213,9 @@ def find_jsonl_for_session(session_name, ctx):
     if not jsonl_files:
         return None
 
-    # 如果有启动时间（/start 创建的），只看启动后创建/修改的文件
-    start_ts = ctx.session_start_time.get(session_name)
-    if start_ts:
-        new_files = [f for f in jsonl_files if os.path.getmtime(f) > start_ts]
-        if new_files:
-            target = max(new_files, key=os.path.getmtime)
-            # 找到了，锁定它，以后不会再变
-            sid = session_id_from_log_path(target, agent)
-            ctx.session_jsonl_id[session_name] = sid
-            ctx.session_start_time.pop(session_name, None)
-            ctx.save_bindings()
-            log.info(f"自动锁定 JSONL: {session_name} → {sid}")
-            return target
-        # 还没出现新文件（Claude Code 还在启动），等下次轮询
-        return None
+    # /start 的启动时间只能说明“可能相关”，不能单独证明归属。
+    # 仍然必须通过屏幕内容匹配来锁定 JSONL。
 
-    # 兜底：仅用于 /new 或 /bind 等没有精确信息的场景
     # 排除已被其他 session 占用的 JSONL，避免同目录下多 session 互相抢文件
     claimed_ids = set(ctx.session_jsonl_id.values())
     unclaimed = [f for f in jsonl_files
@@ -167,15 +231,8 @@ def find_jsonl_for_session(session_name, ctx):
         log.info(f"屏幕验证锁定 JSONL: {session_name} → {sid}")
         return verified
 
-    # 降级：取最近修改的
-    latest = max(candidates, key=os.path.getmtime)
-    if time.time() - os.path.getmtime(latest) > 300:
-        return None
-    sid = session_id_from_log_path(latest, agent)
-    ctx.session_jsonl_id[session_name] = sid
-    ctx.save_bindings()
-    log.info(f"时间排序锁定 JSONL: {session_name} → {sid}")
-    return latest
+    # 内容匹配失败时不锁定。宁可继续 screen fallback，也不能串到别的会话。
+    return None
 
 
 
@@ -209,6 +266,29 @@ pending_image = {}     # {session_name: {"id": tool_use_id, "path": str, "time":
 PERMISSION_WAIT = 3    # 秒，tool_use 后等多久没有 tool_result 就判定为等权限确认
 STALE_THRESHOLD = 60   # 秒，JSONL 文件超过此时间无变化则检查是否切换了会话
 SCREEN_PUSH_MIN_INTERVAL = 5  # generic backend 屏幕变化最小推送间隔
+
+
+def maybe_sync_backend_from_screen(sname: str, ctx) -> str:
+    """Update backend when a generic tmux session visibly enters Codex/Claude.
+
+    This uses the same visible prompt classifier as command routing. It avoids
+    process-name guesses while allowing a shell-started `codex`/`claude` to move
+    from generic screen fallback to structured JSONL monitoring.
+    """
+    screen = clean_ansi(capture_pane(sname, lines=20))
+    target = classify_screen_input(screen)
+    if target.kind not in ("codex", "claude"):
+        return ctx.get_backend(sname)
+
+    current = ctx.get_backend(sname)
+    if current != target.kind:
+        ctx.session_backend[sname] = target.kind
+        # Drop generic fallback and stale JSONL state so the next loop can lock
+        # the newly visible agent by content instead of reusing old ownership.
+        screen_state.pop(sname, None)
+        clear_jsonl_binding(sname, ctx, f"backend 切换 {current} → {target.kind}")
+        log.info(f"屏幕识别切换 backend: {sname} {current} → {target.kind}")
+    return target.kind
 
 
 def maybe_push_screen_update(sname, chat_ids, is_remote, ctx):
@@ -291,7 +371,7 @@ def jsonl_monitor(ctx):
                 session_chats.setdefault(sname, []).append(cid)
 
             for sname, chat_ids in session_chats.items():
-                agent = ctx.get_backend(sname)
+                agent = maybe_sync_backend_from_screen(sname, ctx)
                 is_remote = ctx.remote_mode.get(sname, False)
 
                 # Generic CLI 没有结构化 JSONL：远程模式下用屏幕变化作为通用 fallback。
@@ -307,12 +387,17 @@ def jsonl_monitor(ctx):
                     runtime_path = runtime_state.get("jsonl_path")
                     runtime_offset = runtime_state.get("jsonl_offset")
                     if runtime_path and os.path.exists(runtime_path):
-                        current_size = os.path.getsize(runtime_path)
-                        pos = runtime_offset if isinstance(runtime_offset, int) else current_size
-                        pos = min(max(pos, 0), current_size)
-                        jsonl_state[sname] = {"path": runtime_path, "pos": pos, "last_change": time.time()}
-                        log.info(f"恢复 {agent} JSONL offset: {sname} → {os.path.basename(runtime_path)}:{pos}")
-                        state = jsonl_state[sname]
+                        verified_runtime = verify_jsonl_by_screen(sname, [runtime_path], ctx)
+                        if verified_runtime:
+                            current_size = os.path.getsize(runtime_path)
+                            pos = runtime_offset if isinstance(runtime_offset, int) else current_size
+                            pos = min(max(pos, 0), current_size)
+                            jsonl_state[sname] = {"path": runtime_path, "pos": pos, "last_change": time.time()}
+                            log.info(f"恢复 {agent} JSONL offset: {sname} → {os.path.basename(runtime_path)}:{pos}")
+                            state = jsonl_state[sname]
+                        else:
+                            clear_jsonl_binding(sname, ctx, "持久化 JSONL 未通过屏幕内容校验")
+                            state = None
                     else:
                         state = None
 

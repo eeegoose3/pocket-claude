@@ -16,6 +16,7 @@ from backends import (
     start_command,
 )
 from formatting import clean_ansi
+from screen_classifier import classify_screen_input, looks_like_shell_command
 from security import (
     approval_token_ok,
     doctor_report,
@@ -102,6 +103,33 @@ def select_menu_option(session: str, target_num: int) -> None:
     tmux_run(["send-keys", "-t", session, "Enter"])
 
 
+def input_target_for_session(session_name: str) -> str:
+    """Return user-facing input target label for a tmux session."""
+    screen = clean_ansi(capture_pane(session_name, lines=20))
+    return classify_screen_input(screen).label
+
+
+def missing_tmux_message(session_name: str) -> str:
+    return (
+        f"当前飞书聊天绑定的 tmux session 不存在：{session_name}\n\n"
+        "可用：\n"
+        "/sessions 查看正在运行的 tmux session\n"
+        "/bind <name或编号> 改绑定其他 tmux session\n"
+        "/start ... 重新创建并启动 CLI\n"
+        "/unbind 解除当前绑定"
+    )
+
+
+def resolve_session_selector(selector: str, sessions: list[str]) -> str | None:
+    """Resolve either a session name or a 1-based list index."""
+    if selector.isdigit():
+        idx = int(selector)
+        if 1 <= idx <= len(sessions):
+            return sessions[idx - 1]
+        return None
+    return selector
+
+
 def handle_command(text: str, msg_chat_id: str, ctx: CommandContext) -> None:
     """Handle one incoming user command/message."""
     chat_session_map = ctx.chat_session_map
@@ -146,7 +174,7 @@ def handle_command(text: str, msg_chat_id: str, ctx: CommandContext) -> None:
     text = re.sub(r"@_user_\d+\s*", "", text).strip()
 
     # 飞书有时会吞掉 / 前缀，统一补上
-    cmd_words = ("help", "doctor", "list", "status", "start", "resume", "new", "bind", "switch", "unbind", "screen", "file", "y", "n", "cancel", "caffeinate", "remote", "local")
+    cmd_words = ("help", "doctor", "list", "sessions", "status", "start", "resume", "new", "bind", "switch", "unbind", "screen", "file", "y", "n", "cancel", "caffeinate", "remote", "local")
     first_word = text.split()[0] if text.split() else ""
     if first_word in cmd_words:
         text = "/" + text
@@ -158,27 +186,21 @@ def handle_command(text: str, msg_chat_id: str, ctx: CommandContext) -> None:
     if text == "/help":
         send_im_msg(
             "tmux-bridge 命令：\n\n"
-            "【主窗口命令】\n"
-            "/doctor — 检查配置、安全默认值和本机 CLI 依赖\n"
-            "/list — 列出所有 tmux session\n"
-            "/status — 全局状态总览（backend、模式、日志、连接）\n"
-            "/new <name> [claude|codex|generic] — 给已有 session 创建飞书窗口\n"
-            "/start [claude|codex] <name> <目录> — 新建 CLI 并创建飞书窗口\n"
-            "/resume [claude|codex] <name> <session-id> — 恢复历史对话并创建飞书窗口\n\n"
-            "【会话内命令】\n"
-            "/screen — 截取屏幕（最后50行）\n"
-            "/file <路径> — 发送本地文件到飞书（图片直接显示）\n"
-            "/y — 确认（发送 y）\n"
-            "/n — 拒绝（发送 n）\n"
+            "【常用】\n"
+            "/status — 查看当前飞书聊天绑定的 tmux 状态\n"
+            "/sessions — 列出正在运行的 tmux session（/list 兼容）\n"
+            "/bind <编号或名称> — 当前飞书聊天绑定 tmux session\n"
+            "/screen — 截取当前 tmux 画面，并判断输入目标\n"
+            "/start [claude|codex] <name> <目录> — 新建 tmux 并启动 CLI\n"
+            "/new <name> [claude|codex|generic] — 给已有 tmux 创建飞书聊天\n"
+            "/unbind — 解除当前飞书聊天和 tmux 的绑定\n\n"
+            "【会话内】\n"
+            "/file <路径> — 发送本地文件到飞书（需 FILE_ALLOW_DIRS）\n"
+            "/y / /n — 给 CLI 交互确认发送 y/n\n"
             "/cancel — 发送 Ctrl+C\n"
-            "/remote — 进入远程模式（推送所有消息）\n"
-            "/local — 切换到本地模式（停止推送）\n"
-            "/unbind — 解除绑定\n"
-            "/caffeinate — 切换防睡眠（出门时开启）\n"
-            "其他文本 — 直接发送到 session\n\n"
-            "【模式说明】\n"
-            "发消息到 CLI 时自动进入远程模式（推送回复）\n"
-            "在电脑键盘输入时自动切换到本地模式（停止推送）"
+            "/remote / /local — 手动切换远程/本地推送模式\n"
+            "/caffeinate — 切换防睡眠\n\n"
+            "其他文本会输入到当前绑定的 tmux session。"
         )
         return
 
@@ -197,39 +219,53 @@ def handle_command(text: str, msg_chat_id: str, ctx: CommandContext) -> None:
             send_im_msg("☕ 防睡眠已开启，Mac 不会自动休眠\n（断连期间的消息仍会在重连后自动补拉）")
         return
 
-    # /list
-    if text == "/list":
+    # /sessions (/list 兼容)
+    if text in ("/sessions", "/list"):
         sessions = list_sessions()
         if not sessions:
-            send_im_msg("没有运行中的 tmux session")
+            send_im_msg("没有正在运行的 tmux session")
         else:
             bound_sessions = {}
             for cid, sname in chat_session_map.items():
                 bound_sessions.setdefault(sname, []).append(cid)
-            lines = []
-            for s in sessions:
-                if s == bound:
-                    lines.append(f"  {s} ← 当前绑定")
-                elif s in bound_sessions:
-                    lines.append(f"  {s} (已绑定)")
-                else:
-                    lines.append(f"  {s}")
-            send_im_msg("tmux sessions:\n" + "\n".join(lines))
+            lines = ["tmux sessions:"]
+            for idx, s in enumerate(sessions, start=1):
+                marker = " ← 当前绑定" if s == bound else (" (已绑定)" if s in bound_sessions else "")
+                target = input_target_for_session(s)
+                lines.append(f"{idx}. {s} | 输入目标：{target}{marker}")
+            lines.append("\n可用 /bind <编号或名称> 绑定当前飞书聊天")
+            send_im_msg("\n".join(lines))
         return
 
-    # /status — 全局状态总览
+    # /status — 当前聊天和 tmux session 状态
     if text == "/status":
-        lines = ["📊 Bridge 状态\n"]
-        # 收集所有绑定的 session
-        all_sessions = set(chat_session_map.values())
-        for sname in sorted(all_sessions):
-            mode = "🟢 远程" if remote_mode.get(sname, False) else "⚫ 本地"
-            agent = get_backend(sname)
-            jid = session_jsonl_id.get(sname)
-            jid_str = jid[:8] if jid else ("屏幕模式" if agent == "generic" else "未绑定")
-            jid_icon = "" if jid or agent == "generic" else " ⚠️"
-            lines.append(f"{sname}: {mode} | {agent} | log: {jid_str}{jid_icon}")
-        # WebSocket 状态
+        lines = ["📊 Bridge 状态"]
+        if bound:
+            lines.append(f"当前飞书聊天绑定 tmux：{bound}")
+            if session_exists(bound):
+                target = input_target_for_session(bound)
+                lines.append("tmux 状态：在线")
+                lines.append(f"输入目标：{target}")
+                agent = get_backend(bound)
+                jid = session_jsonl_id.get(bound)
+                if jid:
+                    lines.append(f"最近日志：{agent} {jid[:8]}")
+                else:
+                    lines.append(f"最近日志：{agent} 未绑定")
+            else:
+                lines.append("tmux 状态：不存在")
+                lines.append("提示：发送 /sessions 改绑，或 /start ... 重新创建")
+        else:
+            lines.append("当前飞书聊天未绑定 tmux session")
+            lines.append("提示：发送 /sessions 查看可绑定项，或 /start ... 新建")
+
+        all_sessions = sorted(set(chat_session_map.values()))
+        if all_sessions:
+            lines.append("\n已记录绑定：")
+            for sname in all_sessions:
+                status = "在线" if session_exists(sname) else "不存在"
+                lines.append(f"- {sname}: {status}")
+
         if last_connect_time > 0:
             ws_ago = int(time.time() - last_connect_time)
             if ws_ago < 60:
@@ -247,7 +283,6 @@ def handle_command(text: str, msg_chat_id: str, ctx: CommandContext) -> None:
                 lines.append(f"上次断连: {dc_ago}秒前")
             elif dc_ago < 3600:
                 lines.append(f"上次断连: {dc_ago // 60}分钟前")
-        # caffeinate 状态
         caf = "开启" if is_caffeinate_running() else "关闭"
         lines.append(f"caffeinate: {caf}")
         send_im_msg("\n".join(lines))
@@ -282,30 +317,25 @@ def handle_command(text: str, msg_chat_id: str, ctx: CommandContext) -> None:
         if not os.path.isdir(directory):
             send_im_msg(f"项目目录不存在: {directory}")
             return
+        display = BACKENDS[agent]["display"]
+        if session_exists(name):
+            send_im_msg(
+                f"tmux session '{name}' 已存在。\n"
+                f"我不会往已有 tmux 里自动输入启动命令。\n"
+                f"如果要控制它，发送 /bind {name}；如果要新开，请换一个 session 名。"
+            )
+            return
         session_backend[name] = agent
         save_bindings()
         # 记录启动时间，用于后续精确识别新创建的日志文件
         session_start_time[name] = time.time()
         cmd = start_command(agent, directory)
-        display = BACKENDS[agent]["display"]
-        # 如果 tmux session 已存在，在里面启动 CLI（如果还没跑的话）
-        if session_exists(name):
-            # 检查 session 里是否已有目标 CLI 在运行
-            ok, pane_cmd = tmux_run(["display-message", "-t", name, "-p", "#{pane_current_command}"])
-            binary = BACKENDS[agent]["binary"]
-            if ok and (not binary or binary not in pane_cmd.lower()):
-                send_keys(name, cmd)
-                send_im_msg(f"tmux session '{name}' 已存在，正在启动 {display}...")
-                time.sleep(3)
-            else:
-                send_im_msg(f"tmux session '{name}' 已存在且 {display} 在运行")
-        else:
-            ok, err = create_tmux_and_run(name, cmd)
-            if not ok:
-                send_im_msg(err)
-                return
-            send_im_msg(f"已创建 tmux session '{name}'，{display} 启动中...")
-            time.sleep(3)
+        ok, err = create_tmux_and_run(name, cmd)
+        if not ok:
+            send_im_msg(err)
+            return
+        send_im_msg(f"已创建 tmux session '{name}'，{display} 启动中...")
+        time.sleep(3)
         # 创建飞书会话
         existing = [cid for cid, sname in chat_session_map.items() if sname == name]
         if existing:
@@ -348,32 +378,29 @@ def handle_command(text: str, msg_chat_id: str, ctx: CommandContext) -> None:
             return
         # 飞书可能在长 ID 中插入换行，清理掉所有空白字符
         session_id = re.sub(r"\s+", "", raw_session_id)
-        session_backend[name] = agent
-        # 记录 session_id，用于精确锁定日志文件
-        session_jsonl_id[name] = session_id
-        save_bindings()
+        if session_exists(name):
+            send_im_msg(
+                f"tmux session '{name}' 已存在。\n"
+                "我不会往已有 tmux 里自动输入 Codex/Claude resume 命令。\n"
+                f"如果要控制它，发送 /bind {name}；如果要恢复历史，请换一个新的 tmux session 名。"
+            )
+            return
         # 从日志查找项目目录
         cwd = find_cwd_for_session_id(session_id, agent)
         if not cwd:
             send_im_msg(f"找不到 session-id '{session_id}' 对应的对话记录")
             return
+        session_backend[name] = agent
+        # 记录 session_id，用于精确锁定日志文件
+        session_jsonl_id[name] = session_id
+        save_bindings()
         cmd = resume_command(agent, cwd, session_id)
         display = BACKENDS[agent]["display"]
-        if session_exists(name):
-            # session 已存在，在里面启动 resume
-            ok, pane_cmd = tmux_run(["display-message", "-t", name, "-p", "#{pane_current_command}"])
-            binary = BACKENDS[agent]["binary"]
-            if ok and binary and binary in pane_cmd.lower():
-                send_im_msg(f"tmux session '{name}' 里已有 {display} 在运行")
-            else:
-                send_keys(name, cmd)
-                send_im_msg(f"在已有 session '{name}' 中恢复对话...")
-        else:
-            ok, err = create_tmux_and_run(name, cmd)
-            if not ok:
-                send_im_msg(err)
-                return
-            send_im_msg(f"已创建 tmux session '{name}'，正在恢复对话...")
+        ok, err = create_tmux_and_run(name, cmd)
+        if not ok:
+            send_im_msg(err)
+            return
+        send_im_msg(f"已创建 tmux session '{name}'，正在恢复对话...")
         # 等 CLI 启动
         time.sleep(3)
         # 创建飞书会话（检查是否已有）
@@ -406,7 +433,7 @@ def handle_command(text: str, msg_chat_id: str, ctx: CommandContext) -> None:
     if text.startswith("/new"):
         parts = text.split()
         if len(parts) < 2:
-            send_im_msg("用法: /new <session名> [claude|codex|generic]")
+            send_im_msg("用法: /new <tmux-session名> [claude|codex|generic]")
             return
         name = parts[1].strip()
         err = validate_session_name(name)
@@ -419,12 +446,12 @@ def handle_command(text: str, msg_chat_id: str, ctx: CommandContext) -> None:
             get_backend(name)
         if not session_exists(name):
             sessions = list_sessions()
-            send_im_msg(f"session '{name}' 不存在\n可用: {', '.join(sessions)}")
+            send_im_msg(f"tmux session '{name}' 不存在\n可用: {', '.join(sessions)}")
             return
         # 检查是否已有会话绑定到这个 session
         existing = [cid for cid, sname in chat_session_map.items() if sname == name]
         if existing:
-            send_im_msg(f"session '{name}' 已有绑定的会话，无需重复创建\n如需重建，先在对应会话里发 /unbind")
+            send_im_msg(f"tmux session '{name}' 已有绑定的飞书聊天，无需重复创建\n如需重建，先在对应聊天里发 /unbind")
             return
         send_im_msg(f"正在创建会话 '{name}'...")
         new_chat_id = create_im_chat(name)
@@ -435,7 +462,7 @@ def handle_command(text: str, msg_chat_id: str, ctx: CommandContext) -> None:
         save_bindings()
         # 在新会话里发欢迎消息 + 截屏
         send_im_msg(
-            f"已绑定到 session: {name} ({backend_display(name)})\n直接在这里发消息即可控制",
+            f"已绑定到 tmux session: {name} ({backend_display(name)})\n直接在这里发消息即可控制",
             target_chat_id=new_chat_id,
         )
         screen = clean_ansi(capture_pane(name))
@@ -450,14 +477,17 @@ def handle_command(text: str, msg_chat_id: str, ctx: CommandContext) -> None:
         if len(parts) < 2:
             send_im_msg("用法: /bind <session名> [claude|codex|generic]")
             return
-        name = parts[1].strip()
+        sessions = list_sessions()
+        name = resolve_session_selector(parts[1].strip(), sessions)
+        if not name:
+            send_im_msg(f"编号无效。可用: {', '.join(sessions) if sessions else '无'}")
+            return
         err = validate_session_name(name)
         if err:
             send_im_msg(err)
             return
         if not session_exists(name):
-            sessions = list_sessions()
-            send_im_msg(f"session '{name}' 不存在\n可用: {', '.join(sessions)}")
+            send_im_msg(f"tmux session '{name}' 不存在\n可用: {', '.join(sessions)}")
             return
         if len(parts) >= 3:
             session_backend[name] = normalize_agent(parts[2])
@@ -465,7 +495,7 @@ def handle_command(text: str, msg_chat_id: str, ctx: CommandContext) -> None:
             get_backend(name)
         chat_session_map[msg_chat_id] = name
         save_bindings()
-        send_im_msg(f"已绑定到 session: {name} ({backend_display(name)})")
+        send_im_msg(f"已绑定到 tmux session: {name} ({backend_display(name)})")
         # 绑定后立即截屏
         screen = clean_ansi(capture_pane(name))
         if screen:
@@ -477,26 +507,28 @@ def handle_command(text: str, msg_chat_id: str, ctx: CommandContext) -> None:
         if msg_chat_id in chat_session_map:
             old = chat_session_map.pop(msg_chat_id)
             save_bindings()
-            send_im_msg(f"已解绑 session: {old}")
+            send_im_msg(f"已解绑 tmux session: {old}")
         else:
-            send_im_msg("当前对话未绑定任何 session")
+            send_im_msg("当前飞书聊天未绑定任何 tmux session")
         return
 
     # ── 以下命令需要已绑定 session ──
 
     if not bound:
-        send_im_msg("请先绑定 session\n发 /list 查看可用 session\n发 /bind <name> 绑定")
+        send_im_msg("当前飞书聊天还没有绑定 tmux session。\n发送 /sessions 查看可绑定项，或 /start ... 新建。")
         return
     if not session_exists(bound):
-        send_im_msg(f"session '{bound}' 已不存在，自动解绑")
-        chat_session_map.pop(msg_chat_id, None)
-        save_bindings()
+        send_im_msg(missing_tmux_message(bound))
         return
 
     # /screen
     if text == "/screen":
         screen = clean_ansi(capture_pane(bound))
-        send_im_msg(f"📺 {bound}:\n{screen}" if screen else "屏幕为空")
+        if screen:
+            target = classify_screen_input(screen).label
+            send_im_msg(f"📺 {bound}:\n{screen}\n\n输入目标：{target}")
+        else:
+            send_im_msg("屏幕为空")
         return
 
     # /file <路径> — 发送本地文件到飞书
@@ -599,6 +631,22 @@ def handle_command(text: str, msg_chat_id: str, ctx: CommandContext) -> None:
             return
 
     # 普通文本 → send-keys（自动进入远程模式）
+    screen = clean_ansi(capture_pane(bound, lines=20))
+    target = classify_screen_input(screen)
+    if target.kind == "shell" and not looks_like_shell_command(text):
+        send_im_msg(
+            "当前 tmux 看起来停在 Shell。\n"
+            "这句话不像 shell 命令，所以我没有发送。\n"
+            "如果你想启动 Codex，可以直接发送：codex\n"
+            "如果你想启动 Claude Code，可以直接发送：claude\n"
+            "也可以先发送 /screen 查看当前画面。"
+        )
+        return
     ensure_remote_mode(bound)
     send_keys(bound, text)
-    send_im_msg(f"→ 已发送到 {bound}")
+    if target.kind == "shell":
+        send_im_msg(f"→ 已输入到 Shell（tmux: {bound}）")
+    elif target.kind in ("codex", "claude"):
+        send_im_msg(f"→ 已发送到 {target.label}（tmux: {bound}）")
+    else:
+        send_im_msg(f"→ 已输入到 tmux: {bound}（输入目标：{target.label}）")

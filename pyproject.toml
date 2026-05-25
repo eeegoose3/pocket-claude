@@ -34,6 +34,7 @@ py-modules = [
     "monitor",
     "parsers",
     "remote_mode",
+    "screen_classifier",
     "security",
     "session_runtime",
     "state",

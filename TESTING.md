@@ -3,7 +3,7 @@
 ## Automated checks
 
 ```bash
-python3 -m py_compile bridge.py app.py cli.py backends.py parsers.py security.py tmux.py state.py formatting.py commands.py monitor.py im_adapter.py feishu_adapter.py remote_mode.py history.py session_runtime.py
+python3 -m py_compile bridge.py app.py cli.py backends.py parsers.py security.py tmux.py state.py formatting.py commands.py monitor.py screen_classifier.py im_adapter.py feishu_adapter.py remote_mode.py history.py session_runtime.py
 python3 -m unittest discover -v
 git diff --check
 ```
@@ -60,6 +60,16 @@ Tests cover:
 - inbound Feishu text parsing and whitelist filtering
 - safe no-client send behavior
 - BridgeRuntime adapter injection, so core runtime behavior can be tested without a live Feishu SDK client
+
+## tmux session UX checks
+
+The user-facing routing model is `Feishu chat → tmux session → current CLI/shell`. Automated tests cover:
+
+- screen prompt classification for Codex and shell
+- `/sessions`/`/bind <number>` style tmux binding
+- missing tmux sessions keeping their Feishu binding record instead of auto-unbinding
+- shell prompt protection: natural language is not sent to shell, while commands such as `codex` are sent
+- `/start` refusing to inject startup commands into an existing tmux session
 
 ## Manual Feishu + tmux smoke test
 

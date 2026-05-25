@@ -1,4 +1,4 @@
-"""Persistent runtime state helpers for pocket-claude.
+"""Persistent runtime state helpers for Phone Agent Remote.
 
 SQLite is the primary store.  Legacy JSON files are still read once as a
 migration source so existing local installs keep their chat/session bindings.

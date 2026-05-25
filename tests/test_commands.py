@@ -63,7 +63,7 @@ class CommandTests(unittest.TestCase):
         ctx = self.make_ctx()
         handle_command("help", "chat", ctx)
         self.assertTrue(self.messages)
-        self.assertIn("tmux-bridge 命令", self.messages[0]["text"])
+        self.assertIn("Phone Agent Remote 命令", self.messages[0]["text"])
 
     def test_plain_text_bound_session_sends_keys(self):
         ctx = self.make_ctx()
@@ -77,7 +77,86 @@ class CommandTests(unittest.TestCase):
 
         self.assertEqual(self.sent_keys, [("work", "hello")])
         self.assertIn(("ensure", "work"), self.remote)
-        self.assertEqual(self.messages[-1]["text"], "→ 已发送到 work")
+        self.assertIn("→ 已输入到 tmux: work", self.messages[-1]["text"])
+
+    def test_missing_bound_tmux_keeps_binding_and_explains_options(self):
+        ctx = self.make_ctx()
+        ctx.chat_session_map["chat"] = "gone"
+        old_session_exists = commands.session_exists
+        try:
+            commands.session_exists = lambda name: False
+            handle_command("hello", "chat", ctx)
+        finally:
+            commands.session_exists = old_session_exists
+
+        self.assertEqual(ctx.chat_session_map, {"chat": "gone"})
+        self.assertEqual(self.sent_keys, [])
+        self.assertIn("tmux session 不存在：gone", self.messages[-1]["text"])
+        self.assertIn("/sessions", self.messages[-1]["text"])
+
+    def test_bind_accepts_session_index(self):
+        ctx = self.make_ctx()
+        old_list_sessions = commands.list_sessions
+        old_session_exists = commands.session_exists
+        old_capture = commands.capture_pane
+        try:
+            commands.list_sessions = lambda: ["one", "two"]
+            commands.session_exists = lambda name: name in ("one", "two")
+            commands.capture_pane = lambda name, lines=50: "chouduck@MacBook-Air project %"
+            handle_command("/bind 2", "chat", ctx)
+        finally:
+            commands.list_sessions = old_list_sessions
+            commands.session_exists = old_session_exists
+            commands.capture_pane = old_capture
+
+        self.assertEqual(ctx.chat_session_map["chat"], "two")
+        self.assertIn("已绑定到 tmux session: two", self.messages[0]["text"])
+
+    def test_shell_natural_language_is_not_sent(self):
+        ctx = self.make_ctx()
+        ctx.chat_session_map["chat"] = "work"
+        old_session_exists = commands.session_exists
+        old_capture = commands.capture_pane
+        try:
+            commands.session_exists = lambda name: True
+            commands.capture_pane = lambda name, lines=50: "chouduck@MacBook-Air project %"
+            handle_command("帮我看看项目", "chat", ctx)
+        finally:
+            commands.session_exists = old_session_exists
+            commands.capture_pane = old_capture
+
+        self.assertEqual(self.sent_keys, [])
+        self.assertIn("停在 Shell", self.messages[-1]["text"])
+        self.assertIn("codex", self.messages[-1]["text"])
+
+    def test_shell_command_is_sent_with_shell_receipt(self):
+        ctx = self.make_ctx()
+        ctx.chat_session_map["chat"] = "work"
+        old_session_exists = commands.session_exists
+        old_capture = commands.capture_pane
+        try:
+            commands.session_exists = lambda name: True
+            commands.capture_pane = lambda name, lines=50: "chouduck@MacBook-Air project %"
+            handle_command("codex", "chat", ctx)
+        finally:
+            commands.session_exists = old_session_exists
+            commands.capture_pane = old_capture
+
+        self.assertEqual(self.sent_keys, [("work", "codex")])
+        self.assertIn("已输入到 Shell", self.messages[-1]["text"])
+
+    def test_start_refuses_existing_tmux_without_injecting_command(self):
+        ctx = self.make_ctx()
+        old_session_exists = commands.session_exists
+        try:
+            commands.session_exists = lambda name: True
+            handle_command("/start codex work /tmp", "chat", ctx)
+        finally:
+            commands.session_exists = old_session_exists
+
+        self.assertEqual(self.sent_keys, [])
+        self.assertIn("已存在", self.messages[-1]["text"])
+        self.assertIn("/bind work", self.messages[-1]["text"])
 
 
 if __name__ == "__main__":

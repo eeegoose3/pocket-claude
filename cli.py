@@ -1,4 +1,4 @@
-"""Command line interface for pocket-claude."""
+"""Command line interface for Phone Agent Remote."""
 
 from __future__ import annotations
 
@@ -93,13 +93,13 @@ def cmd_version(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="pocket-claude",
-        description="Control Claude Code, Codex, or tmux-based CLI agents from your phone.",
+        prog="phone-agent",
+        description="Use your phone as a remote controller for desktop CLI agents like Codex and Claude Code.",
     )
     parser.add_argument("--version", action="version", version=VERSION)
     sub = parser.add_subparsers(dest="command")
 
-    run = sub.add_parser("run", help="Start the Feishu/tmux bridge")
+    run = sub.add_parser("run", help="Start the phone-to-tmux agent bridge")
     run.add_argument("--env", default=".env", help="Path to .env file, default: .env")
     run.set_defaults(func=cmd_run)
 

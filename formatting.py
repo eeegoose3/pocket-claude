@@ -1,4 +1,4 @@
-"""Text formatting helpers for tmux-bridge output."""
+"""Text formatting helpers for Phone Agent Remote output."""
 
 from __future__ import annotations
 

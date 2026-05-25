@@ -166,13 +166,31 @@ When Claude Code or Codex needs permission to run a command or edit a file, you'
 
 | File | Description |
 |------|-------------|
-| `bridge.py` | Runtime bridge: Feishu, tmux, command routing, monitors |
+| `bridge.py` | Runtime bridge bootstrap and lifecycle wiring |
+| `feishu_adapter.py` | Feishu/Lark message, file, chat, inbound event, and reconnect adapter |
+| `commands.py` | Command routing for `/start`, `/resume`, `/screen`, approvals, and text forwarding |
+| `monitor.py` | Background JSONL/screen monitor, permission/image/menu detection |
+| `remote_mode.py` | Remote/local mode state and history-context notifications |
+| `history.py` | Recent conversation history loader from agent JSONL logs |
+| `session_runtime.py` | tmux session runtime helpers, backend inference, and caffeinate |
 | `backends.py` | Claude/Codex/generic backend helpers: commands, log discovery, cwd lookup |
 | `security.py` | Security configuration and validation helpers |
+| `tmux.py` | tmux command helpers |
+| `state.py` | Persistent runtime state helpers |
+| `formatting.py` | Output cleanup and Markdown/table formatting helpers |
 | `parsers.py` | Pure Claude/Codex JSONL parser functions |
 | `tests/test_parsers.py` | Minimal parser compatibility tests |
 | `tests/test_backends.py` | Minimal backend helper tests |
+| `tests/test_commands.py` | Minimal command routing tests |
+| `tests/test_feishu_adapter.py` | Minimal Feishu adapter tests |
+| `tests/test_formatting.py` | Minimal output formatting tests |
+| `tests/test_history.py` | Minimal conversation history tests |
+| `tests/test_monitor.py` | Minimal monitor helper tests |
+| `tests/test_remote_mode.py` | Minimal remote-mode tests |
 | `tests/test_security.py` | Minimal security helper tests |
+| `tests/test_session_runtime.py` | Minimal session runtime tests |
+| `tests/test_tmux.py` | Minimal tmux helper tests |
+| `tests/test_state.py` | Minimal state persistence tests |
 | `TESTING.md` | Automated and manual smoke-test notes |
 | `.env` | Feishu credentials (not committed) |
 | `bindings.json` | Chat ↔ session mappings (auto-generated, not committed) |
@@ -207,7 +225,7 @@ See `TESTING.md` for automated checks and manual smoke-test notes.
 
 
 ```bash
-python3 -m py_compile bridge.py backends.py parsers.py security.py
+python3 -m py_compile bridge.py backends.py parsers.py security.py tmux.py state.py formatting.py commands.py monitor.py feishu_adapter.py remote_mode.py history.py session_runtime.py
 python3 -m unittest discover -v
 ```
 

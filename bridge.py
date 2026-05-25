@@ -68,6 +68,13 @@ from feishu_adapter import (
     send_message as feishu_send_message,
 )
 from monitor import MonitorContext, jsonl_monitor as run_jsonl_monitor, menu_notified, menu_state
+from remote_mode import (
+    RemoteModeContext,
+    remote_mode,
+    enter_remote_mode as remote_enter_remote_mode,
+    exit_remote_mode as remote_exit_remote_mode,
+    ensure_remote_mode as remote_ensure_remote_mode,
+)
 from state import BridgeState, load_state, save_state
 from tmux import (
     capture_pane,
@@ -147,7 +154,6 @@ seen_message_ids = set()    # 飞书消息去重（防止重复事件）
 caffeinate_proc = None      # caffeinate 子进程，阻止 Mac 睡眠
 last_disconnect_time = 0    # WebSocket 上次断连时间戳
 last_connect_time = 0       # WebSocket 上次连接时间戳
-remote_mode = {}            # {session_name: bool} 远程模式（True = 推送到飞书）
 bridge_sent_time = {}       # {session_name: float} bridge 最近一次向 CLI 发送的时间
 BRIDGE_SENT_WINDOW = 15     # 秒，此窗口内的日志 user 消息视为 bridge 发送
 
@@ -288,50 +294,27 @@ def create_feishu_chat(name):
 
 # ── 远程模式 ──────────────────────────────────────────
 
+def build_remote_mode_context() -> RemoteModeContext:
+    return RemoteModeContext(
+        chat_session_map=chat_session_map,
+        session_jsonl_id=session_jsonl_id,
+        backend_display=backend_display,
+        get_backend=get_backend,
+        load_recent_history=load_recent_history,
+        send_feishu_msg=send_feishu_msg,
+    )
+
+
 def enter_remote_mode(sname, chat_ids):
-    """进入远程模式：推送最近 3 轮对话上下文到飞书"""
-    remote_mode[sname] = True
-    log.info(f"[远程模式] {sname} 进入远程模式")
-    display = backend_display(sname)
-    sid = session_jsonl_id.get(sname)
-    if sid:
-        history = load_recent_history(sid, agent=get_backend(sname))
-        if history:
-            for cid in chat_ids:
-                send_feishu_msg("── 📱 进入远程模式，以下是最近对话 ──", target_chat_id=cid, use_card=False)
-            for msg in history:
-                if msg["role"] == "user":
-                    for cid in chat_ids:
-                        send_feishu_msg(f"👤 你：{msg['text']}", target_chat_id=cid, use_card=False)
-                else:
-                    t = msg["text"]
-                    if len(t) > 500:
-                        t = t[:500] + "...（已截断）"
-                    for cid in chat_ids:
-                        send_feishu_msg(f"🤖 {display}：{t}", target_chat_id=cid, use_card=True)
-            for cid in chat_ids:
-                send_feishu_msg("── 以上是历史，以下是实时 ──", target_chat_id=cid, use_card=False)
-            return
-    for cid in chat_ids:
-        send_feishu_msg("📱 已进入远程模式", target_chat_id=cid)
+    remote_enter_remote_mode(sname, chat_ids, build_remote_mode_context())
 
 
 def exit_remote_mode(sname, chat_ids, reason=""):
-    """退出远程模式"""
-    remote_mode[sname] = False
-    log.info(f"[远程模式] {sname} 退出远程模式: {reason}")
-    msg = "💻 已切换到本地模式"
-    if reason:
-        msg += f"（{reason}）"
-    for cid in chat_ids:
-        send_feishu_msg(msg, target_chat_id=cid)
+    remote_exit_remote_mode(sname, chat_ids, build_remote_mode_context(), reason=reason)
 
 
 def ensure_remote_mode(sname):
-    """如果 session 不在远程模式，自动进入"""
-    if not remote_mode.get(sname, False):
-        chat_ids = [cid for cid, sn in chat_session_map.items() if sn == sname]
-        enter_remote_mode(sname, chat_ids)
+    remote_ensure_remote_mode(sname, build_remote_mode_context())
 
 
 # ── 命令处理 ──────────────────────────────────────────

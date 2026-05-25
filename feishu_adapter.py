@@ -1,4 +1,4 @@
-"""Feishu/Lark IM adapter for tmux-bridge."""
+"""Feishu/Lark IM adapter for Phone Agent Remote."""
 
 from __future__ import annotations
 

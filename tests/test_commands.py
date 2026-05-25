@@ -63,7 +63,7 @@ class CommandTests(unittest.TestCase):
         ctx = self.make_ctx()
         handle_command("help", "chat", ctx)
         self.assertTrue(self.messages)
-        self.assertIn("tmux-bridge 命令", self.messages[0]["text"])
+        self.assertIn("Phone Agent Remote 命令", self.messages[0]["text"])
 
     def test_plain_text_bound_session_sends_keys(self):
         ctx = self.make_ctx()

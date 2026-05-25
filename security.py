@@ -1,4 +1,4 @@
-"""Security-related configuration and validation helpers for pocket-claude."""
+"""Security-related configuration and validation helpers for Phone Agent Remote."""
 
 from __future__ import annotations
 

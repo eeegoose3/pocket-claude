@@ -1,4 +1,4 @@
-"""Command routing for tmux-bridge."""
+"""Command routing for Phone Agent Remote."""
 
 from __future__ import annotations
 
@@ -185,10 +185,10 @@ def handle_command(text: str, msg_chat_id: str, ctx: CommandContext) -> None:
     # /help
     if text == "/help":
         send_im_msg(
-            "tmux-bridge 命令：\n\n"
+            "Phone Agent Remote 命令：\n\n"
             "【常用】\n"
             "/status — 查看当前飞书聊天绑定的 tmux 状态\n"
-            "/sessions — 列出正在运行的 tmux session（/list 兼容）\n"
+            "/sessions — 列出正在运行的 tmux session\n"
             "/bind <编号或名称> — 当前飞书聊天绑定 tmux session\n"
             "/screen — 截取当前 tmux 画面，并判断输入目标\n"
             "/start [claude|codex] <name> <目录> — 新建 tmux 并启动 CLI\n"

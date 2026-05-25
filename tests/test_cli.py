@@ -20,7 +20,7 @@ class CliTests(unittest.TestCase):
         with contextlib.redirect_stdout(stdout):
             rc = cli.main([])
         self.assertEqual(rc, 0)
-        self.assertIn("usage: pocket-claude", stdout.getvalue())
+        self.assertIn("usage: phone-agent", stdout.getvalue())
 
     def test_init_creates_env_and_refuses_overwrite(self):
         with tempfile.TemporaryDirectory() as d:

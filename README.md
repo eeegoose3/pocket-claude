@@ -1,15 +1,19 @@
-# pocket-claude
+# Phone Agent Remote
 
-Control Claude Code, Codex, or any tmux-based CLI agent from your phone — through any IM app you already use.
+Use your phone as a remote controller for the CLI agents running on your computer.
+
+**Leave your laptop behind. Keep vibe coding from your phone.**
+
+Phone Agent Remote lets you control desktop CLI agents like Codex, Claude Code, or any tmux-based terminal workflow through an IM app. Each phone chat maps to one tmux session on your computer, so messages, replies, screenshots, files, and confirmations stay routed to the right terminal.
 
 ## Why
 
-I often start multiple CLI agent sessions (Claude Code, Codex, or other terminal agents) on my Mac, then need to step away. But the conversations are stuck in the terminal. Claude Code's official [Remote Control](https://code.claude.com/docs/en/remote-control) lets you continue from the Claude app, and [Channels](https://code.claude.com/docs/en/channels) adds Telegram/Discord/iMessage — but neither solves multi-session management well:
+I often start multiple CLI agent sessions (Codex, Claude Code, or other terminal agents) on my Mac, then need to step away. Without a bridge, the work is stuck on the laptop. Claude Code's official [Remote Control](https://code.claude.com/docs/en/remote-control) lets you continue from the Claude app, and [Channels](https://code.claude.com/docs/en/channels) adds Telegram/Discord/iMessage — but neither solves multi-session management well:
 
 - **Remote Control**: works great for one session, but managing 5+ sessions means switching between them in the Claude app with no IM-style notification flow
 - **Channels**: each Claude Code process binds to one bot — there's no routing layer to map different chats to different sessions
 
-pocket-claude takes a different approach: **one bridge process manages all your CLI agent sessions**, with each IM chat mapped to a specific tmux session. Send a message in chat A, it goes to session A. Chat B goes to session B. No ambiguity, no manual switching.
+Phone Agent Remote takes a different approach: **one bridge process manages all your desktop CLI agent sessions**, with each IM chat mapped to a specific tmux session. Send a message in chat A, it goes to session A. Chat B goes to session B. No ambiguity, no manual switching.
 
 ```
 Phone (Feishu/Lark today)
@@ -30,7 +34,7 @@ im_adapter.py  ←→  feishu_adapter.py  ←→  app.py / BridgeRuntime  ←→
 
 ## How it compares
 
-|  | pocket-claude | Remote Control | Channels |
+|  | Phone Agent Remote | Remote Control | Channels |
 |---|---|---|---|
 | Multi-session routing | One chat per session, automatic | Switch manually in Claude app | One bot per session, no routing |
 | Zero config on CLI side | Works with any running tmux session | Need `/remote-control` per session | Need `--channels` flag at startup |
@@ -40,11 +44,13 @@ im_adapter.py  ←→  feishu_adapter.py  ←→  app.py / BridgeRuntime  ←→
 
 ## What it does
 
+- **Phone remote for CLI agents**: use your phone to continue work on agents running on your computer
 - **Multi-session hub**: one bridge manages Claude Code, Codex, or generic CLI sessions, each mapped to its own IM chat
 - Send messages to a CLI agent from your phone, get replies pushed back in real-time
 - Detect and forward interactive UIs where structured logs exist: selection menus, plan approvals, permission confirmations
 - Auto-push images that Claude Code generates (Write tool + Playwright screenshots)
 - Seamlessly switch between phone and computer — local keyboard input auto-deactivates remote mode
+- Recover cleanly after restarts with SQLite-backed state and content-verified JSONL matching, so one tmux session does not accidentally read another agent log
 
 ## How it works
 
@@ -94,11 +100,17 @@ The bridge is organized around a small runtime object plus focused helper module
 ### Install
 
 ```bash
-git clone https://github.com/eeegoose3/pocket-claude.git
-cd pocket-claude
+git clone https://github.com/eeegoose3/phone-agent-remote.git
+cd phone-agent-remote
 python3 -m venv venv
 venv/bin/pip install -r requirements.txt
 venv/bin/pip install -e .
+```
+
+If you previously installed the old `pocket-claude` package name in the same virtualenv, remove it once:
+
+```bash
+venv/bin/pip uninstall -y pocket-claude
 ```
 
 ### Configure
@@ -108,7 +120,7 @@ cp .env.example .env
 # Edit .env with your Feishu app credentials
 
 # Or create the starter file through the CLI:
-venv/bin/pocket-claude init
+venv/bin/phone-agent init
 ```
 
 ### Run
@@ -118,12 +130,12 @@ The bridge must run in a tmux session (foreground, not background):
 ```bash
 # Create a dedicated tmux session for the bridge
 tmux new-session -s bridge
-cd ~/path/to/pocket-claude
-venv/bin/pocket-claude run
+cd ~/path/to/phone-agent-remote
+venv/bin/phone-agent run
 ```
 
 `venv/bin/python bridge.py` still works as a compatibility entry point.
-Use `venv/bin/pocket-claude doctor` for a local preflight check before starting the bridge.
+Use `venv/bin/phone-agent doctor` for a local preflight check before starting the bridge.
 
 
 ## Security defaults
@@ -137,7 +149,7 @@ This bridge can control your local terminal, so the defaults are intentionally c
 - tmux session names are restricted to letters, numbers, `.`, `_`, `-` and max 64 chars.
 
 Run `/doctor` in Feishu to check the current configuration and local CLI dependencies.
-From the terminal, run `venv/bin/pocket-claude doctor` for the same local check.
+From the terminal, run `venv/bin/phone-agent doctor` for the same local check.
 
 ## Commands
 
@@ -148,7 +160,7 @@ From the terminal, run `venv/bin/pocket-claude doctor` for the same local check.
 | `/help` | Show all commands |
 | `/doctor` | Check security config and local CLI dependencies |
 | `/status` | Show current Feishu chat → tmux binding, tmux online/missing state, and likely input target |
-| `/sessions` | List running tmux sessions with numbered entries and likely input target (`/list` is an alias) |
+| `/sessions` | List running tmux sessions with numbered entries and likely input target |
 | `/bind <name-or-number> [claude|codex|generic]` | Bind the current Feishu chat to a running tmux session |
 | `/new <name> [claude|codex|generic]` | Create a Feishu chat for an existing tmux session |
 | `/start [claude|codex] <name> <dir>` | Create a new tmux session + start selected CLI + create Feishu chat |
@@ -216,7 +228,7 @@ When Claude Code or Codex needs permission to run a command or edit a file, you'
 | File | Description |
 |------|-------------|
 | `bridge.py` | Thin executable entry point |
-| `cli.py` | `pocket-claude` CLI entry point (`run`, `doctor`, `init`, `version`) |
+| `cli.py` | `phone-agent` CLI entry point (`run`, `doctor`, `init`, `version`) |
 | `pyproject.toml` | Editable-install metadata and console script definition |
 | `.env.example` | Starter environment template |
 | `app.py` | BridgeRuntime application state, context wiring, and lifecycle startup |
@@ -274,7 +286,7 @@ The platform-agnostic core is already separated: command routing (`commands.py`)
 
 ## Contributing
 
-This project is built and maintained by one person (with a lot of help from Claude). Contributions are welcome:
+This project is built and maintained by one person with AI assistance. Contributions are welcome:
 
 - **Bug reports** — if something breaks, open an issue with your terminal output and steps to reproduce
 - **Bug fixes** — PRs for fixes are always appreciated, especially edge cases I haven't hit yet
@@ -289,14 +301,14 @@ See `TESTING.md` for automated checks and manual smoke-test notes.
 ```bash
 python3 -m py_compile bridge.py app.py cli.py backends.py parsers.py security.py tmux.py state.py formatting.py commands.py monitor.py screen_classifier.py im_adapter.py feishu_adapter.py remote_mode.py history.py session_runtime.py
 python3 -m unittest discover -v
-venv/bin/pocket-claude version
-venv/bin/pocket-claude doctor
+venv/bin/phone-agent version
+venv/bin/phone-agent doctor
 ```
 
 ## Known limitations
 
 - WebSocket disconnects are a known behavior of the Feishu Python SDK; reconnect is optimized to < 1 second, with automatic message recovery
-- JSONL file matching uses screen content cross-verification when multiple sessions share the same project directory
+- JSONL file matching uses current tmux screen content cross-verification when multiple sessions share the same project directory; it intentionally avoids latest-mtime fallback to prevent cross-session log mixups
 - Codex support is based on the current `~/.codex/sessions/**/*.jsonl` format and `codex resume <session-id>` command
 - Generic CLI support has no structured log; it uses tmux screen-change forwarding
 - tmux server must be started from a GUI terminal (Terminal.app) for Keychain access to work

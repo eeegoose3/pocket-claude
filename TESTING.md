@@ -14,9 +14,9 @@ After installing in editable mode:
 
 ```bash
 venv/bin/pip install -e .
-venv/bin/pocket-claude version
-venv/bin/pocket-claude doctor --env .env
-venv/bin/pocket-claude init --env /tmp/pocket-claude.env --force
+venv/bin/phone-agent version
+venv/bin/phone-agent doctor --env .env
+venv/bin/phone-agent init --env /tmp/phone-agent-remote.env --force
 ```
 
 Do not paste real `.env` values into issues, PRs, or logs.
@@ -41,7 +41,7 @@ State tests cover:
 - `CodexJsonlParser`
 - `ScreenParser`
 
-`/doctor` and `pocket-claude doctor` show the active parser compatibility versions so field reports can include the parser contract in use.
+`/doctor` and `phone-agent doctor` show the active parser compatibility versions so field reports can include the parser contract in use.
 
 `tests/fixtures/claude_sample.jsonl` and `tests/fixtures/codex_sample.jsonl` are small anonymized samples that lock the minimum JSONL compatibility contract:
 
@@ -70,12 +70,14 @@ The user-facing routing model is `Feishu chat → tmux session → current CLI/s
 - missing tmux sessions keeping their Feishu binding record instead of auto-unbinding
 - shell prompt protection: natural language is not sent to shell, while commands such as `codex` are sent
 - `/start` refusing to inject startup commands into an existing tmux session
+- generic shell sessions automatically switching to structured Codex/Claude monitoring after the user starts an agent inside tmux
+- JSONL ownership locking by current tmux screen content instead of latest modified time
 
 ## Manual Feishu + tmux smoke test
 
 Date: 2026-05-25
 
-Latest manual smoke test was run after the `BridgeRuntime` refactor on merged `main`.
+Latest manual smoke test was run after the tmux session UX refactor and content-verified JSONL matching fix.
 
 Environment:
 - macOS
@@ -93,6 +95,9 @@ Verified:
 - `/screen` returns the tmux pane contents
 - `/file /etc/passwd` is rejected when `FILE_ALLOW_DIRS` is unset
 - `/cancel` sends Ctrl+C to the bound tmux session
+- `/start generic shell-test ...` creates a shell-backed tmux session
+- sending `codex` inside that shell enters Codex and switches monitoring from screen fallback to Codex JSONL
+- Codex replies are pushed back to Feishu without cross-reading another Codex JSONL from the same cwd
 
 Not yet verified:
 - `/resume codex <name> <session-id>` end-to-end from Feishu

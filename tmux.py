@@ -1,4 +1,4 @@
-"""tmux command helpers for pocket-claude."""
+"""tmux command helpers for Phone Agent Remote."""
 
 from __future__ import annotations
 

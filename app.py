@@ -1,4 +1,4 @@
-"""Application runtime wiring for pocket-claude/tmux-bridge."""
+"""Application runtime wiring for Phone Agent Remote."""
 
 from __future__ import annotations
 
@@ -325,7 +325,7 @@ class BridgeRuntime:
 
         # 启动 WebSocket 长连接
         log.info("正在连接飞书...")
-        log.info("连接成功后，在飞书私聊或群聊 tmux-bridge bot 发送 /help 查看用法")
+        log.info("连接成功后，在飞书私聊或群聊 Phone Agent Remote bot 发送 /help 查看用法")
 
         ws_client = lark.ws.Client(
             APP_ID,

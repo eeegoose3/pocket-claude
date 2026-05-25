@@ -17,7 +17,7 @@ gpt-5.5 high · ~/funny
         self.assertEqual(target.kind, "codex")
 
     def test_detects_shell_prompt(self):
-        screen = "chouduck@MacBook-Air pocket-claude %"
+        screen = "chouduck@MacBook-Air phone-agent-remote %"
         target = classify_screen_input(screen)
         self.assertEqual(target.kind, "shell")
 

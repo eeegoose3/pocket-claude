@@ -1,7 +1,7 @@
 """
-tmux-bridge: Control Claude Code, Codex, or generic CLI agents from your phone via IM (Feishu/Lark)
+Phone Agent Remote: control Codex, Claude Code, or generic CLI agents from your phone via IM (Feishu/Lark).
 
-Usage: cd ~/Claude_code/tmux-bridge && venv/bin/python bridge.py
+Usage: cd ~/path/to/phone-agent-remote && venv/bin/python bridge.py
 Requires: .env with APP_ID, APP_SECRET, ALLOWED_USER_ID (see .env.example)
 """
 

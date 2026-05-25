@@ -3,13 +3,13 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pocket-claude"
+name = "phone-agent-remote"
 version = "0.2.0"
-description = "Control Claude Code, Codex, or tmux-based CLI agents from your phone."
+description = "Use your phone as a remote controller for desktop CLI agents like Codex and Claude Code."
 readme = "README.md"
 requires-python = ">=3.9"
 license = {text = "MIT"}
-authors = [{name = "pocket-claude contributors"}]
+authors = [{name = "Phone Agent Remote contributors"}]
 dependencies = [
     "lark-oapi",
     "python-dotenv",
@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.scripts]
-pocket-claude = "cli:main"
+phone-agent = "cli:main"
 
 [tool.setuptools]
 py-modules = [
